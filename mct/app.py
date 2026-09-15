@@ -30,7 +30,7 @@ from .boot import BootScreen
 from .forms import FormResult, UnitForm
 from .inventory import Inventory, Site, Unit, load_inventory, pretty_path, save_inventory
 from .keys import ssh_identity_args
-from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status
+from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status, tcp_rtt
 from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
 
 GLYPH_UP = "●"
@@ -263,7 +263,8 @@ class MCT(App[None]):
         if probe is None:
             rtt = Text("…" if u.name in self._probing else "—", style=DIM)
         elif probe.ok:
-            rtt = Text(f"{probe.latency_ms}ms", style=ORANGE if probe.latency_ms < 300 else AMBER)
+            ms = probe.rtt_ms if probe.rtt_ms is not None else probe.latency_ms
+            rtt = Text(f"{ms}ms", style=ORANGE if ms < 150 else AMBER if ms < 400 else RED)
         else:
             rtt = Text("✕", style=RED)
         if probe and probe.ok and probe.services:
@@ -394,8 +395,13 @@ class MCT(App[None]):
             t.append(probe.uptime_h, style=TEXT)
             t.append("     LOAD ", style=PEACH)
             t.append(probe.load or "—", style=TEXT)
-            t.append("     RTT ", style=PEACH)
-            t.append(f"{probe.latency_ms}ms", style=TEXT)
+            if probe.rtt_ms is not None:
+                t.append("     RTT ", style=PEACH)
+                t.append(f"{probe.rtt_ms}ms", style=TEXT)
+                t.append(f"   probe {probe.latency_ms}ms", style=DIM)
+            else:
+                t.append("     PROBE ", style=PEACH)
+                t.append(f"{probe.latency_ms}ms", style=TEXT)
             t.append(f"   ({age}s ago)", style=DIM)
             t.append("\n")
             t.append("MEM    ", style=PEACH)
@@ -502,6 +508,8 @@ class MCT(App[None]):
         self.refresh_row(u)
         try:
             ident = self.inv.identity_for(u)
+            peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+            rtt_task = asyncio.ensure_future(tcp_rtt(peer.ip)) if peer and peer.ip and peer.online else None
             # direct ssh first (root@<name> for containers), lan alias next,
             # host exec last — and remember which path worked for Enter
             p = await ssh_probe(u, identity=ident)
@@ -514,6 +522,8 @@ class MCT(App[None]):
                 p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
         finally:
             self._probing.discard(u.name)
+        if rtt_task is not None:
+            p.rtt_ms = await rtt_task
         old = self.probes.get(u.name)
         self.probes[u.name] = p
         if old is None or old.ok != p.ok:

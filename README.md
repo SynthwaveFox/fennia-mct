@@ -59,6 +59,10 @@ survive — keep notes in each unit's `note:` field instead.
 - `○` dim — offline (red for a site that's down)
 - `◌` — not in the tailnet and never probed / not yet checked
 
+**RTT** is a bare TCP connect to the unit's tailnet address on port 22 — network
+only. The full probe time (ssh handshake + the telemetry script, typically
+0.5–1.5 s) is shown in the telemetry panel as `probe`.
+
 ## Site checks
 
 Nest `sites:` under the unit that serves them and they show up as tree children

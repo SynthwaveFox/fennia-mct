@@ -98,10 +98,27 @@ done
 """
 
 
+async def tcp_rtt(host: str, port: int = 22, timeout: float = 3.0) -> int | None:
+    """Milliseconds for a bare TCP connect — the network, nothing else."""
+    t0 = time.perf_counter()
+    try:
+        _, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    ms = int((time.perf_counter() - t0) * 1000)
+    w.close()
+    try:
+        await w.wait_closed()
+    except Exception:  # noqa: BLE001
+        pass
+    return ms
+
+
 @dataclass
 class Probe:
     ok: bool
-    latency_ms: int = 0
+    latency_ms: int = 0            # whole probe: connect + ssh auth + script
+    rtt_ms: int | None = None      # bare TCP connect to port 22 (network only)
     hostname: str = ""
     uptime_s: int = 0
     load: str = ""

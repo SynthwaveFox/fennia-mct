@@ -1,6 +1,6 @@
 [project]
 name = "fennia-mct"
-version = "0.3.3"
+version = "0.3.4"
 description = "FENNIA Master Control Terminal — SSH selector + live fleet status for the FX-2 squadron"
 requires-python = ">=3.10"
 dependencies = ["textual>=1.0", "pyyaml>=6"]
