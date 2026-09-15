@@ -503,7 +503,7 @@ class MCT(App[None]):
         self.log_line("ssh", f"→ {label}", "ok")
         with self.suspend():
             print(f"\x1b[38;2;255;138;0m▌FENNIA▐ {prefix} on {host} …\x1b[0m")
-            sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S=sudo; fi; '
+            sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S="sudo -H"; fi; '
             rc = subprocess.call(["ssh", "-t", *ssh_identity_args(self._via_identity(u)), host,
                                   f"{sudo}$S {prefix} sh -c 'exec bash || exec sh'"])
         self.log_line("ssh", f"← {label} (exit {rc})", "ok" if rc == 0 else "warn")
@@ -641,7 +641,7 @@ def ssh_passthrough(argv: list[str]) -> int:
         target = host.ssh if host else u.via
         ident = inv.identity_for(host) if host else inv.identity
         inner = shlex.join(cmd) if cmd else "sh -c 'exec bash || exec sh'"
-        sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S=sudo; fi; '
+        sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S="sudo -H"; fi; '
         argv2 = ["ssh", "-t", *ssh_identity_args(ident), target, f"{sudo}$S {u.via_exec} {inner}"]
     else:
         target = u.lan if lan and u.lan else u.ssh
