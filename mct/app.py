@@ -79,6 +79,7 @@ class MCT(App[None]):
         self.pve: PVEStatus | None = None
         self.filter_text = ""
         self._probing: set[str] = set()
+        self.direct_ok: dict[str, bool] = {}   # last probe reached the unit by plain ssh
 
     # ------------------------------------------------------------ layout
 
@@ -407,15 +408,15 @@ class MCT(App[None]):
         self.refresh_row(u)
         try:
             ident = self.inv.identity_for(u)
-            if u.direct_ssh:
-                p = await ssh_probe(u, identity=ident)
-                if not p.ok and u.lan:
-                    peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-                    if peer is None or not peer.online:
-                        p = await ssh_probe(u, target=u.lan, identity=ident)
-                if not p.ok and u.via:
-                    p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
-            else:
+            # direct ssh first (root@<name> for containers), lan alias next,
+            # host exec last — and remember which path worked for Enter
+            p = await ssh_probe(u, identity=ident)
+            self.direct_ok[u.name] = p.ok
+            if not p.ok and u.lan:
+                peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+                if peer is None or not peer.online:
+                    p = await ssh_probe(u, target=u.lan, identity=ident)
+            if not p.ok and u.via:
                 p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
         finally:
             self._probing.discard(u.name)
@@ -487,10 +488,11 @@ class MCT(App[None]):
         u = self.selected
         if u is None:
             return
-        if u.direct_ssh:
-            self._ssh(u.ssh, u.name, self.inv.identity_for(u))
-        else:
+        # plain ssh unless we know it doesn't work and there's a host to go through
+        if u.via and self.direct_ok.get(u.name) is False:
             self.action_connect_via()
+        else:
+            self._ssh(u.ssh, u.name, self.inv.identity_for(u))
 
     def action_connect_via(self) -> None:
         """Shell into a container through its host (incus exec / pct exec)."""
@@ -636,7 +638,7 @@ def ssh_passthrough(argv: list[str]) -> int:
         print(f"mct ssh: no unit {rest[0]!r} in {pretty_path(inv.source)}", file=sys.stderr)
         return 1
     cmd = rest[1:]
-    if via or not u.direct_ssh:
+    if via:
         host = inv.by_name(u.via)
         target = host.ssh if host else u.via
         ident = inv.identity_for(host) if host else inv.identity
