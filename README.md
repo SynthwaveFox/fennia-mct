@@ -152,6 +152,49 @@ adds the key to the user's *SSH Public Key* field, and turns *Password
 Authentication* off. Tailscale on TrueNAS itself is installed from the Apps
 catalog, not by enroll (it says so and moves on).
 
+## Adding another device (laptop, WSL, a second desktop)
+
+Each device gets its own key; the fleet already trusts one device, so that one
+pushes the newcomer's key out. Four steps.
+
+**On the new device**
+
+```bash
+pipx install git+https://github.com/SynthwaveFox/fennia-mct     # 1. install
+```
+
+```bash
+mkdir -p ~/.config/mct && cp <inventory.yaml from an enrolled device> ~/.config/mct/   # 2. inventory (no secrets in it)
+```
+
+```bash
+mct keys gen -C mct@laptop      # 3. its own key — distinct comment so authorized_keys stays readable
+```
+
+Copy the `ssh-ed25519 …` line it prints.
+
+**On a device that already has access**
+
+```bash
+mct enroll --pub "ssh-ed25519 AAAA… mct@laptop"     # 4. installs it on every unit, no passwords
+```
+
+Back on the new device: `mct`.
+
+**WSL:** WSL2 shares Windows' network so it is already on the tailnet, but has
+no `tailscale` binary and MCT calls one for the online/offline column. Point it
+at the Windows one — WSL can exec Windows binaries directly:
+
+```bash
+sudo ln -s "/mnt/c/Program Files/Tailscale/tailscale.exe" /usr/local/bin/tailscale
+```
+
+The inventory can be copied straight across: `cp /mnt/c/Users/<you>/.config/mct/inventory.yaml ~/.config/mct/`.
+
+**Losing a device:** remove its line (by comment) from `authorized_keys` on each
+unit — `mct ssh <unit> "sed -i '/mct@laptop$/d' ~/.ssh/authorized_keys"` — and
+on TrueNAS from the user's *SSH Public Key* field in the UI.
+
 ## The stack it assumes
 
 1. **Tailscale on every unit.** `tailscale status --json` is the source of
