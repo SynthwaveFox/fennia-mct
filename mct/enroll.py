@@ -409,8 +409,8 @@ def enroll_unit(inv: Inventory, u: Unit, pub: str, args: argparse.Namespace) -> 
         good, why = verify(target, identity)
         if not good:
             fail(f"key login to {target} fails: {why or 'unknown'} — leaving password auth ON")
-            if via and not args.ts_key:
-                warn("container has no route yet — re-run with --ts-key so it joins the tailnet")
+            if via and not args.ts_key and "timed out" in why:
+                warn("no route to the container — is it on the tailnet? (re-run with --ts-key to join it)")
             return False
         ok("key login verified")
 

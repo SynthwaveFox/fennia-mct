@@ -45,7 +45,8 @@ class Unit:
 
     def __post_init__(self) -> None:
         self._ssh_explicit = bool(self.ssh)
-        self.ssh = self.ssh or self.name
+        # exec through a host runs as root, so that's the account the key lands in
+        self.ssh = self.ssh or (f"root@{self.name}" if self.via else self.name)
         self.tailscale = (self.tailscale or self.name).lower()
         if self.via and not self.via_exec:
             self.via_exec = f"incus exec {self.name} --"
@@ -154,7 +155,7 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
 def _unit_dict(u: Unit) -> dict:
     """Compact YAML form: drop defaults so the file stays hand-editable."""
     d = asdict(u)
-    if d["ssh"] == u.name:
+    if d["ssh"] == u.name or (u.via and d["ssh"] == f"root@{u.name}"):
         d.pop("ssh")
     if d["tailscale"] == u.name.lower():
         d.pop("tailscale")
