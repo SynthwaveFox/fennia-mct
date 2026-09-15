@@ -20,6 +20,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -139,7 +140,12 @@ install_key() {
     printf '%s\n' "$PUBKEY" >> "$ak"
     say "key added for $LOGIN_USER"
   fi
-  chmod 600 "$ak"; chown "$LOGIN_USER:$grp" "$ak"
+  # Proxmox links this into /etc/pve/priv (pmxcfs): already 0600 root, and
+  # chown/chmod there are refused — skip perms on symlinks, tolerate elsewhere
+  if [ ! -L "$ak" ]; then
+    chmod 600 "$ak" 2>/dev/null || say "?? could not chmod $ak"
+    chown "$LOGIN_USER:$grp" "$ak" 2>/dev/null || say "?? could not chown $ak"
+  fi
 }
 
 harden() {
@@ -313,14 +319,29 @@ def run_remote(target: str, mode: str, script: str, identity: str, batch: bool,
     return proc.returncode, ""
 
 
-def verify(target: str, identity: str) -> tuple[bool, str]:
-    proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
-         *ssh_identity_args(identity), target, "echo mct-ok"],
-        capture_output=True, text=True,
-    )
-    return "mct-ok" in proc.stdout, proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else ""
+def verify(target: str, identity: str, attempts: int = 2) -> tuple[bool, str]:
+    """Key-only login. Bounded: ssh can stall past ConnectTimeout while sshd
+    is reloading, so cap the whole thing and retry once."""
+    why = ""
+    for i in range(attempts):
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 "-o", "StrictHostKeyChecking=accept-new",
+                 "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+                 *ssh_identity_args(identity), target, "echo mct-ok"],
+                capture_output=True, text=True, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            why = "timed out"
+            time.sleep(2)
+            continue
+        if "mct-ok" in proc.stdout:
+            return True, ""
+        why = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"exit {proc.returncode}"
+        if i + 1 < attempts:
+            time.sleep(2)
+    return False, why
 
 
 # ------------------------------------------------------------------ main
