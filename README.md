@@ -24,7 +24,7 @@ Enter. Orange rice, double borders, Mocha base.
 git clone <this repo> ~/src/fennia-mct && cd ~/src/fennia-mct
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e .
-cp inventory.yaml ~/.config/mct/inventory.yaml    # then edit
+cp inventory.example.yaml ~/.config/mct/inventory.yaml   # then edit
 mct
 ```
 

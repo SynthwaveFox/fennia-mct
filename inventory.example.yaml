@@ -1,0 +1,46 @@
+# FENNIA MCT inventory — edit to taste.
+# `name` doubles as the ssh alias unless `ssh:` is set; `tailscale:` defaults to name.
+# Put the real host details in ~/.ssh/config so keys/users/ports live in one place.
+
+callsign: Commander
+squadron: FX-2 SQUADRON
+probe_interval: 30        # seconds between ssh telemetry probes
+tailscale_interval: 5     # seconds between `tailscale status` polls
+
+# Optional: Proxmox API for the guest panel. Make a read-only token:
+#   Datacenter → Permissions → API Tokens → add  root@pam!mct  (privilege separation ON)
+#   then grant PVEAuditor on / to the token. Export it as PVE_TOKEN.
+# proxmox:
+#   host: https://pve01:8006
+#   user: root@pam
+#   token_name: mct
+#   verify_tls: false
+
+units:
+  - name: pve01
+    kind: pve
+    tags: [core]
+    lan: pve01-lan
+    services: [pveproxy, pvedaemon, pve-cluster, zfs-zed]
+    note: Proxmox host — the den
+
+  - name: pihole
+    kind: lxc
+    tags: [net]
+    services: [pihole-FTL, unbound]
+
+  - name: media
+    kind: vm
+    tags: [lab]
+    services: [jellyfin, docker]
+
+  - name: nas
+    kind: host
+    tags: [storage]
+    lan: nas-lan
+    services: [smbd, nfs-server]
+
+  - name: ct-101
+    kind: lxc
+    tags: [lab]
+    services: [docker]
