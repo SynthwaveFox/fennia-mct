@@ -38,6 +38,13 @@ units:
     kind: vm
     tags: [lab]
     services: [jellyfin, docker]
+    sites:
+      - name: jellyfin
+        url: https://jellyfin.example.com/health
+        expect: 200             # exact status (default: any 2xx/3xx)
+        contains: Healthy       # body must contain this text
+      - name: blog
+        url: https://blog.example.com
 
   - name: nas
     kind: host
@@ -62,19 +69,12 @@ units:
     tags: [lab]
     via: truenas              # Incus instance — via_exec defaults to "incus exec sandbox --"
 
-# Optional: HTTP checks, run from wherever mct is running. Shown in the SITES
-# panel (status · response time · days until the TLS cert expires) and, when
-# `unit:` is set, in that unit's telemetry too. Down/up and cert-expiry
-# transitions go to the log.
+# Optional: HTTP checks, run from wherever mct is running. Nest `sites:` under
+# the unit that serves them and they appear as tree children in the UNITS list
+# (status · response time · days until the TLS cert expires); Enter opens the
+# URL. A unit with a down site shows ◐. Top-level `sites:` (no unit) are listed
+# at the end. Transitions and certs under 14 days go to the log.
 http_interval: 60
 sites:
-  - name: blog
-    url: https://blog.example.com
-    unit: media               # optional link to the unit that serves it
-  - name: jellyfin
-    url: https://jellyfin.example.com/health
-    expect: 200               # exact status (default: any 2xx/3xx)
-    contains: Healthy         # body must contain this text
-  - name: pihole-admin
-    url: http://pihole/admin/
-    timeout: 4
+  - name: status-page
+    url: https://status.example.com

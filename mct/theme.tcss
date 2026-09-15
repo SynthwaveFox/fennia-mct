@@ -109,10 +109,6 @@ DataTable > .datatable--hover {
     text-style: bold;
 }
 
-#sites {
-    height: 9;
-    margin: 0 1 0 0;
-}
 #guests {
     height: 12;
     margin: 0 1 0 0;

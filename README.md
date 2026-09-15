@@ -34,23 +34,33 @@ Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 
 ## Site checks
 
-Add `sites:` to the inventory and a **SITES** panel appears under TELEMETRY:
-HTTP status, response time, and days until the TLS cert expires, checked from
-the machine running MCT every `http_interval` seconds (default 60).
+Nest `sites:` under the unit that serves them and they show up as tree children
+in the UNITS list — status code, response time, days until the TLS cert expires —
+checked from the machine running MCT every `http_interval` seconds (default 60):
+
+```
+  ● media       vm
+  ├─ jellyfin   https   200   38ms   61d
+  └─ blog       https   200   92ms   61d
+```
 
 ```yaml
 http_interval: 60
-sites:
-  - name: blog
-    url: https://blog.example.com
-    unit: media                 # optional: also listed in that unit's telemetry
-  - name: jellyfin
-    url: https://jellyfin.example.com/health
-    expect: 200                 # exact status; default is any 2xx/3xx
-    contains: Healthy           # body must contain this
+units:
+  - name: media
+    sites:
+      - name: jellyfin
+        url: https://jellyfin.example.com/health
+        expect: 200                 # exact status; default is any 2xx/3xx
+        contains: Healthy           # body must contain this
+sites:                              # top-level = no unit; listed at the end
+  - name: status-page
+    url: https://status.example.com
 ```
 
-Up/down transitions and certs under 14 days go to the log. `r` re-checks now.
+A unit with a down site shows `◐`. `Enter` on a site row opens it in the
+browser; the telemetry panel shows its last result. Up/down transitions and
+certs under 14 days go to the log; `r` re-checks now.
 
 ## `mct ssh`
 

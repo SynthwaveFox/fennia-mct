@@ -30,6 +30,16 @@ KINDS = ("host", "pve", "vm", "lxc", "appliance")
 
 
 @dataclass
+class Site:
+    name: str
+    url: str
+    expect: int = 0                # exact status wanted; 0 = any 2xx/3xx
+    contains: str = ""             # body must contain this text
+    unit: str = ""                 # set automatically from the parent unit
+    timeout: float = 8.0
+
+
+@dataclass
 class Unit:
     name: str                      # display name + default ssh alias
     ssh: str = ""                  # ssh alias/host (defaults to name)
@@ -42,8 +52,10 @@ class Unit:
     identity: str = ""             # key name in ~/.config/mct/keys, or a path; "" = inventory default
     via: str = ""                  # unit name of the host that runs this container (incus / pct)
     via_exec: str = ""             # command prefix on that host, e.g. "incus exec media --"
+    sites: list = field(default_factory=list)   # list[Site] — HTTP checks this unit serves
 
     def __post_init__(self) -> None:
+        self.sites = [s if isinstance(s, Site) else Site(**s) for s in self.sites]
         self._ssh_explicit = bool(self.ssh)
         # exec through a host runs as root, so that's the account the key lands in
         self.ssh = self.ssh or (f"root@{self.name}" if self.via else self.name)
@@ -55,16 +67,6 @@ class Unit:
     def direct_ssh(self) -> bool:
         """Reach it with plain ssh (true unless it's only reachable via its host)."""
         return not self.via or self._ssh_explicit
-
-
-@dataclass
-class Site:
-    name: str
-    url: str
-    expect: int = 0                # exact status wanted; 0 = any 2xx/3xx
-    contains: str = ""             # body must contain this text
-    unit: str = ""                 # optional: unit that serves it (shown in its detail)
-    timeout: float = 8.0
 
 
 @dataclass
@@ -89,7 +91,7 @@ class Inventory:
     probe_interval: int = 30       # seconds between ssh probes
     tailscale_interval: int = 5    # seconds between tailscale status polls
     identity: str = ""             # default key for every unit ("" = let ssh decide)
-    sites: list[Site] = field(default_factory=list)
+    sites: list[Site] = field(default_factory=list)   # sites with no unit (checked, listed at the end)
     http_interval: int = 60        # seconds between site checks
     source: str = ""
     path: Path = DEFAULT_PATH      # where save_inventory() writes
@@ -101,7 +103,13 @@ class Inventory:
         return next((u for u in self.units if u.name == name), None)
 
     def sites_for(self, unit: Unit) -> list[Site]:
-        return [s for s in self.sites if s.unit == unit.name]
+        return unit.sites
+
+    def all_sites(self) -> list[Site]:
+        return [s for u in self.units for s in u.sites] + list(self.sites)
+
+    def site_by_name(self, name: str) -> Site | None:
+        return next((s for s in self.all_sites() if s.name == name), None)
 
     def upsert(self, unit: Unit, replace: str | None = None) -> None:
         """Add `unit`, or replace the unit currently named `replace`."""
@@ -153,7 +161,18 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
                 seen.add(u.name)
                 units.append(u)
             pve = Proxmox(**data["proxmox"]) if data.get("proxmox") else None
-            sites = [Site(**s) for s in data.get("sites", [])]
+            by_name = {u.name: u for u in units}
+            for u in units:
+                for s in u.sites:
+                    s.unit = u.name
+            sites: list[Site] = []
+            for raw in data.get("sites", []):            # top-level: attach if unit: names one
+                s = Site(**raw)
+                if s.unit and s.unit in by_name:
+                    by_name[s.unit].sites.append(s)
+                else:
+                    s.unit = ""
+                    sites.append(s)
             return Inventory(
                 callsign=data.get("callsign", "Commander"),
                 squadron=data.get("squadron", "FX-2 SQUADRON"),
@@ -188,6 +207,21 @@ def _unit_dict(u: Unit) -> dict:
             d.pop(k)
     if d["kind"] == "host":
         d.pop("kind")
+    if u.sites:
+        d["sites"] = [_site_dict(s) for s in u.sites]
+    else:
+        d.pop("sites", None)
+    return d
+
+
+def _site_dict(s: Site) -> dict:
+    d = {"name": s.name, "url": s.url}
+    if s.expect:
+        d["expect"] = s.expect
+    if s.contains:
+        d["contains"] = s.contains
+    if s.timeout != 8.0:
+        d["timeout"] = s.timeout
     return d
 
 
@@ -207,10 +241,10 @@ def save_inventory(inv: Inventory) -> Path:
             pve.pop("token_value")
         data["proxmox"] = pve
     data["units"] = [_unit_dict(u) for u in inv.units]
-    if inv.sites:
+    if inv.all_sites():
         data["http_interval"] = inv.http_interval
-        data["sites"] = [{k: v for k, v in asdict(s).items()
-                          if v not in ("", 0, 8.0) or k in ("name", "url")} for s in inv.sites]
+    if inv.sites:
+        data["sites"] = [_site_dict(s) for s in inv.sites]
     inv.path.parent.mkdir(parents=True, exist_ok=True)
     tmp = inv.path.with_suffix(".yaml.tmp")
     tmp.write_text(

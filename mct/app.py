@@ -100,7 +100,6 @@ class MCT(App[None]):
                     yield Button("EDIT", id="btn-edit")
             with Vertical(id="right"):
                 yield Panel("", id="detail")
-                yield DataTable(id="sites", cursor_type="none", zebra_stripes=False)
                 yield DataTable(id="guests", cursor_type="none", zebra_stripes=False)
         yield RichLog(id="log", markup=True, highlight=False, wrap=False, max_lines=400)
         yield Footer()
@@ -118,9 +117,9 @@ class MCT(App[None]):
         table.add_column(" ", key="st", width=1)
         table.add_column("UNIT", key="name")
         table.add_column("TAG", key="tag")
-        table.add_column("LINK", key="link")
-        table.add_column("RTT", key="rtt")
-        table.add_column("SVC", key="svc")
+        table.add_column("LINK", key="link", width=15)
+        table.add_column("RTT", key="rtt", width=7)
+        table.add_column("SVC", key="svc", width=5)
 
         guests = self.query_one("#guests", DataTable)
         guests.add_column(" ", key="st", width=1)
@@ -131,18 +130,6 @@ class MCT(App[None]):
         guests.add_column("CPU", key="cpu", width=5)
         guests.add_column("MEM", key="mem")
         guests.display = self.inv.proxmox is not None
-
-        sites = self.query_one("#sites", DataTable)
-        sites.border_title = "SITES"
-        sites.add_column(" ", key="st", width=1)
-        sites.add_column("SITE", key="name")
-        sites.add_column("URL", key="url")
-        sites.add_column("STATUS", key="status", width=7)
-        sites.add_column("RTT", key="rtt", width=7)
-        sites.add_column("TLS", key="tls", width=6)
-        sites.display = bool(self.inv.sites)
-        for s in self.inv.sites:
-            sites.add_row(*self.site_cells(s), key=s.name)
 
         self.rebuild_table()
         self.set_interval(1, self.tick_clock)
@@ -162,7 +149,7 @@ class MCT(App[None]):
         if self.inv.proxmox:
             self.set_interval(20, self.poll_proxmox)
             self.poll_proxmox()
-        if self.inv.sites:
+        if self.inv.all_sites():
             self.set_interval(self.inv.http_interval, self.poll_sites)
             self.poll_sites()
         if ts is None:
@@ -186,15 +173,31 @@ class MCT(App[None]):
         if not f:
             return self.inv.units
         return [u for u in self.inv.units
-                if f in u.name.lower() or any(f in t.lower() for t in u.tags) or f in u.kind]
+                if f in u.name.lower() or any(f in t.lower() for t in u.tags) or f in u.kind
+                or any(f in x.name.lower() for x in u.sites)]
 
     @property
-    def selected(self) -> Unit | None:
+    def selected_key(self) -> str | None:
         table = self.query_one("#units", DataTable)
         if table.row_count == 0:
             return None
-        key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
-        return self.inv.by_name(key) if key else None
+        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+
+    @property
+    def selected(self) -> Unit | None:
+        """The highlighted unit — or the parent unit when a site row is highlighted."""
+        key = self.selected_key
+        if not key:
+            return None
+        if key.startswith("site:"):
+            site = self.inv.site_by_name(key[5:])
+            return self.inv.by_name(site.unit) if site and site.unit else None
+        return self.inv.by_name(key)
+
+    @property
+    def selected_site(self) -> Site | None:
+        key = self.selected_key
+        return self.inv.site_by_name(key[5:]) if key and key.startswith("site:") else None
 
     def status_of(self, u: Unit) -> tuple[str, str]:
         """(glyph, colour) for a unit combining tailscale + probe."""
@@ -202,6 +205,8 @@ class MCT(App[None]):
         probe = self.probes.get(u.name)
         if probe and probe.ok:
             if probe.services and any(s != "active" for s in probe.services.values()):
+                return GLYPH_HALF, AMBER
+            if any((r := self.http.get(x.name)) is not None and not r.ok for x in u.sites):
                 return GLYPH_HALF, AMBER
             return GLYPH_UP, ORANGE
         if peer is not None:
@@ -220,8 +225,16 @@ class MCT(App[None]):
         if table.row_count:
             current = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
         table.clear()
+        f = self.filter_text.lower()
         for u in self.visible_units:
             table.add_row(*self.row_cells(u), key=u.name)
+            kids = [x for x in u.sites if not f or f in x.name.lower() or f in u.name.lower()
+                    or any(f in t.lower() for t in u.tags) or f in u.kind]
+            for i, x in enumerate(kids):
+                table.add_row(*self.site_cells(x, last=(i == len(kids) - 1)), key=f"site:{x.name}")
+        loose = [x for x in self.inv.sites if not f or f in x.name.lower()]
+        for i, x in enumerate(loose):
+            table.add_row(*self.site_cells(x, last=(i == len(loose) - 1), orphan=True), key=f"site:{x.name}")
         if current:
             try:
                 idx = table.get_row_index(current)
@@ -277,8 +290,53 @@ class MCT(App[None]):
 
     # ------------------------------------------------------------ detail
 
+    def render_site_detail(self, x: Site) -> None:
+        panel = self.query_one("#detail", Panel)
+        r = self.http.get(x.name)
+        t = Text()
+        if r is None:
+            t.append(f"{GLYPH_UNKNOWN} ", style=DIM)
+        else:
+            t.append(f"{GLYPH_UP if r.ok else GLYPH_DOWN} ", style=ORANGE if r.ok else RED)
+        t.append(x.name.upper(), style=f"bold {ORANGE}")
+        t.append("   site", style=PEACH)
+        if x.unit:
+            t.append(f"   on {x.unit}", style=DIM)
+        t.append("\n\n")
+        t.append("URL    ", style=PEACH); t.append(x.url, style=TEXT); t.append("\n")
+        if x.expect or x.contains:
+            t.append("WANT   ", style=PEACH)
+            t.append(f"{'HTTP ' + str(x.expect) if x.expect else 'any 2xx/3xx'}"
+                     f"{'  body contains ' + repr(x.contains) if x.contains else ''}", style=DIM)
+            t.append("\n")
+        t.append("\n")
+        if r is None:
+            t.append("checking…", style=DIM)
+        else:
+            age = int(time.time() - r.at)
+            t.append("STATUS ", style=PEACH)
+            if r.status:
+                t.append(f"HTTP {r.status}", style=ORANGE if r.ok else RED)
+            else:
+                t.append("no response", style=RED)
+            t.append(f"     RTT {r.latency_ms}ms", style=TEXT)
+            t.append(f"   ({age}s ago)\n", style=DIM)
+            if r.tls_days is not None:
+                t.append("TLS    ", style=PEACH)
+                t.append(f"expires in {r.tls_days} days", style=ORANGE if r.tls_days > 14 else AMBER if r.tls_days > 3 else RED)
+                t.append("\n")
+            if r.error:
+                t.append("ERROR  ", style=PEACH); t.append(r.error, style=RED); t.append("\n")
+        t.append("\n")
+        t.append("enter", style=f"bold {ORANGE}"); t.append(" open in browser", style=DIM)
+        panel.update(t)
+
     def render_detail(self) -> None:
         panel = self.query_one("#detail", Panel)
+        site = self.selected_site
+        if site is not None:
+            self.render_site_detail(site)
+            return
         u = self.selected
         if u is None:
             panel.update(Text("no unit selected", style=DIM))
@@ -471,29 +529,44 @@ class MCT(App[None]):
 
     # ------------------------------------------------------------ sites
 
-    def site_cells(self, s: Site) -> list[Text]:
-        r = self.http.get(s.name)
+    def site_cells(self, x: Site, last: bool = False, orphan: bool = False) -> list[Text]:
+        """A tree child row under its unit:  └─ blog   http  200  240ms  75d"""
+        r = self.http.get(x.name)
         if r is None:
             glyph, colour = GLYPH_UNKNOWN, DIM
         elif r.ok:
             glyph, colour = GLYPH_UP, ORANGE
         else:
             glyph, colour = GLYPH_DOWN, RED
-        url = s.url.replace("https://", "").replace("http://", "").rstrip("/")
-        status = Text("—", style=DIM) if r is None else \
-            Text(str(r.status) if r.status else "ERR", style=ORANGE if r.ok else RED)
+        branch = ("  " if orphan else "") + ("└─ " if last else "├─ ")
+        name = Text(branch, style=DIM)
+        name.append(x.name, style=TEXT if (r and r.ok) else DIM)
+        tag = Text("https" if x.url.startswith("https") else "http", style=DIM)
+        link = Text("—", style=DIM) if r is None else \
+            Text(str(r.status) if r.status else r.error[:14], style=ORANGE if r.ok else RED)
         rtt = Text("—", style=DIM) if r is None or not r.status else \
             Text(f"{r.latency_ms}ms", style=ORANGE if r.latency_ms < 800 else AMBER)
         if r is None or r.tls_days is None:
             tls = Text("—", style=DIM)
         else:
             tls = Text(f"{r.tls_days}d", style=ORANGE if r.tls_days > 14 else AMBER if r.tls_days > 3 else RED)
-        return [Text(glyph, style=colour), Text(s.name, style=TEXT if (r and r.ok) else DIM),
-                Text(url, style=DIM), status, rtt, tls]
+        return [Text(glyph, style=colour), name, tag, link, rtt, tls]
+
+    def refresh_site_row(self, x: Site) -> None:
+        table = self.query_one("#units", DataTable)
+        key = f"site:{x.name}"
+        try:
+            table.get_row_index(key)
+        except Exception:  # noqa: BLE001 — filtered out
+            return
+        last = table.get_cell(key, "name").plain.startswith(("└─", "  └─"))
+        for col, cell in zip(("st", "name", "tag", "link", "rtt", "svc"),
+                             self.site_cells(x, last=last, orphan=not x.unit)):
+            table.update_cell(key, col, cell)
 
     def poll_sites(self) -> None:
-        for s in self.inv.sites:
-            self.check_site(s)
+        for x in self.inv.all_sites():
+            self.check_site(x)
 
     @work(group="http")
     async def check_site(self, s: Site) -> None:
@@ -507,10 +580,13 @@ class MCT(App[None]):
                 self.log_line("http", f"{s.name} DOWN · {r.error}", "err")
         if r.tls_days is not None and r.tls_days <= 14 and (old is None or old.tls_days != r.tls_days):
             self.log_line("http", f"{s.name} TLS cert expires in {r.tls_days}d", "warn")
-        table = self.query_one("#sites", DataTable)
-        for col, cell in zip(("st", "name", "url", "status", "rtt", "tls"), self.site_cells(s)):
-            table.update_cell(s.name, col, cell)
-        if s.unit and self.selected and self.selected.name == s.unit:
+        self.refresh_site_row(s)
+        if s.unit:
+            parent = self.inv.by_name(s.unit)
+            if parent:
+                self.refresh_row(parent)
+        sel = self.selected_site
+        if (sel and sel.name == s.name) or (s.unit and self.selected and self.selected.name == s.unit):
             self.render_detail()
 
     @work(exclusive=True, group="pve")
@@ -562,6 +638,12 @@ class MCT(App[None]):
             self.probe_unit(u)
 
     def action_connect(self) -> None:
+        site = self.selected_site
+        if site is not None:
+            import webbrowser
+            self.log_line("http", f"open {site.url}", "ok")
+            webbrowser.open(site.url)
+            return
         u = self.selected
         if u is None:
             return
@@ -601,7 +683,7 @@ class MCT(App[None]):
         self.log_line("mct", "manual refresh")
         self.poll_tailscale()
         self.probe_all()
-        if self.inv.sites:
+        if self.inv.all_sites():
             self.poll_sites()
         if self.inv.proxmox:
             self.poll_proxmox()
