@@ -308,9 +308,9 @@ def run_remote(target: str, mode: str, script: str, identity: str, batch: bool,
     if via:
         prefix = via[1]
         cmd = (
-            'if [ "$(id -u)" = 0 ]; then S=; else S="sudo -H"; fi; '
-            f"$S {prefix} sh -c 'cat > /tmp/mct-enroll.sh' < {stage} && "
-            f"$S {prefix} sh -c 'sh /tmp/mct-enroll.sh {mode} root; rc=$?; rm -f /tmp/mct-enroll.sh; exit $rc'; "
+            'mctS() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -H "$@"; fi; }; '
+            f"mctS {prefix} sh -c 'cat > /tmp/mct-enroll.sh' < {stage} && "
+            f"mctS {prefix} sh -c 'sh /tmp/mct-enroll.sh {mode} root; rc=$?; rm -f /tmp/mct-enroll.sh; exit $rc'; "
             f"rc=$?; rm -f {stage}; exit $rc"
         )
     else:

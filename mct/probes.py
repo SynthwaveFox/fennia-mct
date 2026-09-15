@@ -153,8 +153,10 @@ async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
     script = REMOTE_SCRIPT.replace("{services}", " ".join(shlex.quote(s) for s in unit.services))
     if via:
         host, prefix = via
-        sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S="sudo -n -H"; fi; '   # -n: never hang on a prompt
-        argv = [*_base_ssh(timeout, identity), host, f"{sudo}$S {prefix} sh -s"]
+        # shell function, not $VAR: zsh (TrueNAS admin) doesn't word-split variables.
+        # -n: never hang on a sudo prompt
+        fn = 'mctS() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n -H "$@"; fi; }; '
+        argv = [*_base_ssh(timeout, identity), host, f"{fn}mctS {prefix} sh -s"]
     else:
         argv = [*_base_ssh(timeout, identity), target or unit.ssh, "sh", "-s"]
     t0 = time.perf_counter()
