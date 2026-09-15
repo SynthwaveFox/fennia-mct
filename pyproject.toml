@@ -2,7 +2,7 @@
 name = "fennia-mct"
 version = "0.1.0"
 description = "FENNIA Master Control Terminal — SSH selector + live fleet status for the FX-2 squadron"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = ["textual>=1.0", "pyyaml>=6"]
 
 [project.scripts]
