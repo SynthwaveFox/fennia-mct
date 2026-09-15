@@ -93,6 +93,7 @@ class Inventory:
     identity: str = ""             # default key for every unit ("" = let ssh decide)
     sites: list[Site] = field(default_factory=list)   # sites with no unit (checked, listed at the end)
     http_interval: int = 60        # seconds between site checks
+    units_width: int = 62          # width of the UNITS pane ([ / ] in the TUI)
     source: str = ""
     path: Path = DEFAULT_PATH      # where save_inventory() writes
 
@@ -183,6 +184,7 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
                 identity=str(data.get("identity", "") or ""),
                 sites=sites,
                 http_interval=int(data.get("http_interval", 60)),
+                units_width=int(data.get("units_width", 62)),
                 source=str(path),
                 path=path,
             )
@@ -235,6 +237,8 @@ def save_inventory(inv: Inventory) -> Path:
     }
     if inv.identity:
         data["identity"] = inv.identity
+    if inv.units_width != 62:
+        data["units_width"] = inv.units_width
     if inv.proxmox:
         pve = asdict(inv.proxmox)
         if not pve["token_value"]:

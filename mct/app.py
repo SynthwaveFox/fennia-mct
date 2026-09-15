@@ -67,6 +67,8 @@ class MCT(App[None]):
         Binding("t", "tailscale_ping", "ts ping"),
         Binding("a", "add_unit", "add"),
         Binding("e", "edit_unit", "edit"),
+        Binding("left_square_bracket", "pane_narrower", "narrower", key_display="[", show=False),
+        Binding("right_square_bracket", "pane_wider", "wider", key_display="]", show=False),
         Binding("q", "quit", "quit"),
     ]
 
@@ -131,6 +133,7 @@ class MCT(App[None]):
         guests.add_column("MEM", key="mem")
         guests.display = self.inv.proxmox is not None
 
+        self.query_one("#left").styles.width = self.inv.units_width
         self.rebuild_table()
         self.set_interval(1, self.tick_clock)
         self.tick_clock()
@@ -760,6 +763,23 @@ class MCT(App[None]):
             self.render_detail()
             self.probe_unit(payload)
         self.apply_tailscale(self.ts)
+
+    def _resize_pane(self, delta: int) -> None:
+        w = max(40, min(self.size.width - 40, self.inv.units_width + delta))
+        if w == self.inv.units_width:
+            return
+        self.inv.units_width = w
+        self.query_one("#left").styles.width = w
+        try:
+            save_inventory(self.inv)
+        except OSError:
+            pass
+
+    def action_pane_narrower(self) -> None:
+        self._resize_pane(-4)
+
+    def action_pane_wider(self) -> None:
+        self._resize_pane(4)
 
     def action_filter(self) -> None:
         box = self.query_one("#filter", Input)
