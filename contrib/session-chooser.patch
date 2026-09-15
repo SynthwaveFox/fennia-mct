@@ -6,7 +6,7 @@
 # mct (q) exits cage and returns to this menu.
 #
 # cage does not apply niri's output scale, so on a HiDPI panel the terminal
-# comes up tiny — compensate with --font-size (11 * your niri scale, roughly).
+# comes up tiny — GDK_SCALE=<your niri scale> makes GTK scale the whole window.
 # ~/.config/ghostty/mct is contrib/ghostty-mct.  mct is the pipx install.
 -    "niri" "terminal" "reboot" "power off")
 +    "niri" "master control" "terminal" "reboot" "power off")

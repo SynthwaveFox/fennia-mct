@@ -5,7 +5,7 @@
 Type=Application
 Name=FENNIA MCT
 Comment=Master Control Terminal — FX-2 squadron
-Exec=ghostty --config-file=/home/YOURUSER/.config/ghostty/mct --class=fennia.mct --title=FENNIA\ MCT -e /home/YOURUSER/.local/bin/mct
+Exec=ghostty --config-file=/home/YOURUSER/.config/ghostty/mct --class=fennia.mct -e /home/YOURUSER/.local/bin/mct
 Icon=utilities-terminal
 Terminal=false
 Categories=System;Network;RemoteAccess;

@@ -12,6 +12,7 @@ binds {
 window-rule {
     match app-id="^fennia\.mct$"
     open-maximized true
+    draw-border-with-background false   // else the ring paints a solid rectangle behind ghostty
     focus-ring {
         active-color "#ff8a00"
     }
