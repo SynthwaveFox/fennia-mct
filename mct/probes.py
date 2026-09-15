@@ -134,20 +134,28 @@ class Probe:
         return f"{m}m"
 
 
-async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
-                    identity: str = "") -> Probe:
-    """Run REMOTE_SCRIPT over ssh. `target` overrides the ssh alias (LAN fallback)."""
-    script = REMOTE_SCRIPT.replace("{services}", " ".join(shlex.quote(s) for s in unit.services))
-    argv = [
+def _base_ssh(timeout: float, identity: str) -> list[str]:
+    return [
         "ssh",
         "-o", "BatchMode=yes",
         "-o", f"ConnectTimeout={int(timeout // 2) or 1}",
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "LogLevel=ERROR",
         *ssh_identity_args(identity),
-        target or unit.ssh,
-        "sh", "-s",
     ]
+
+
+async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
+                    identity: str = "", via: tuple[str, str] | None = None) -> Probe:
+    """Run REMOTE_SCRIPT over ssh. `target` overrides the ssh alias (LAN fallback).
+    `via` = (host target, exec prefix) runs the script inside a container through
+    its host, e.g. ("truenas", "incus exec media --")."""
+    script = REMOTE_SCRIPT.replace("{services}", " ".join(shlex.quote(s) for s in unit.services))
+    if via:
+        host, prefix = via
+        argv = [*_base_ssh(timeout, identity), host, f"{prefix} sh -s"]
+    else:
+        argv = [*_base_ssh(timeout, identity), target or unit.ssh, "sh", "-s"]
     t0 = time.perf_counter()
     try:
         proc = await asyncio.create_subprocess_exec(

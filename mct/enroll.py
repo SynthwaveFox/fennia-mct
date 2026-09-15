@@ -41,6 +41,7 @@ LISTEN='__LISTEN__'
 TS_AUTHKEY='__TS_AUTHKEY__'
 TS_TAGS='__TS_TAGS__'
 TS_HOSTNAME='__TS_HOSTNAME__'
+CT_KIND='__CT_KIND__'
 
 say() { printf '%s\n' "$*"; }
 
@@ -52,6 +53,53 @@ svc_name() {
   else
     echo sshd
   fi
+}
+
+is_truenas() { have midclt && [ -x /usr/bin/midclt ]; }
+
+truenas_py() {
+  # $1 = python snippet; runs with json + midclt helper
+  python3 - "$LOGIN_USER" "$PUBKEY" "$ROOT_LOGIN" "$MODE" <<'PYEOF'
+import ast, json, subprocess, sys
+user, pubkey, root_login, mode = sys.argv[1:5]
+def call(method, *args):
+    argv = ["midclt", "call", method, *[json.dumps(a) for a in args]]
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"!! midclt {method} failed (rc {r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+    out = r.stdout.strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        pass
+    try:                                   # midclt prints Python literals for scalars (True/None)
+        return ast.literal_eval(out)
+    except (ValueError, SyntaxError):
+        return out
+if mode == "bootstrap":
+    svc = call("service.query", [["service", "=", "ssh"]])[0]
+    if not svc["enable"]:
+        call("service.update", "ssh", {"enable": True})
+    call("service.start", "ssh")
+    print("sshd active (truenas middleware)")
+    u = call("user.query", [["username", "=", user]])[0]
+    keys = [k for k in (u.get("sshpubkey") or "").splitlines() if k.strip()]
+    if pubkey in keys:
+        print(f"key already present for {user}")
+    else:
+        call("user.update", u["id"], {"sshpubkey": "\n".join(keys + [pubkey]) + "\n"})
+        print(f"key added for {user}")
+elif mode == "harden":
+    cur = call("ssh.config")
+    upd = {"passwordauth": False, "kerberosauth": False}
+    if "rootlogin" in cur:                     # older SCALE
+        upd["rootlogin"] = root_login == "yes"
+    call("ssh.update", upd)
+    call("service.restart", "ssh")
+    print("sshd hardened via middleware: passwordauth=off")
+PYEOF
 }
 
 ensure_sshd() {
@@ -135,10 +183,16 @@ $listen_line"
 
 tailscale_join() {
   if [ ! -e /dev/net/tun ]; then
-    say "!! no /dev/net/tun — this looks like an LXC. On the Proxmox host add to /etc/pve/lxc/<id>.conf:"
-    say "     lxc.cgroup2.devices.allow: c 10:200 rwm"
-    say "     lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file"
-    say "   then restart the container and re-run."
+    if [ "$CT_KIND" = "incus" ]; then
+      say "!! no /dev/net/tun — on the TrueNAS host run:"
+      say "     incus config device add $TS_HOSTNAME tun unix-char source=/dev/net/tun path=/dev/net/tun"
+      say "   (no restart needed) then re-run."
+    else
+      say "!! no /dev/net/tun — this looks like an LXC. On the Proxmox host add to /etc/pve/lxc/<id>.conf:"
+      say "     lxc.cgroup2.devices.allow: c 10:200 rwm"
+      say "     lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file"
+      say "   then restart the container and re-run."
+    fi
     exit 4
   fi
   if ! have tailscale; then
@@ -166,6 +220,15 @@ tailscale_join() {
   fi
   say "tailscale up: $TS_HOSTNAME = $(tailscale ip -4 | head -1)${TS_TAGS:+  [$TS_TAGS]}"
 }
+
+if is_truenas; then
+  if [ "$MODE" = "tailscale" ]; then
+    say "!! TrueNAS: install Tailscale as an app from the Apps catalog (host network), not via this script"
+    exit 5
+  fi
+  truenas_py
+  exit 0
+fi
 
 case "$MODE" in
   bootstrap) ensure_sshd; install_key ;;
@@ -218,16 +281,35 @@ def public_key_for(identity: str, explicit_pub: str | None) -> str:
     )
 
 
-def run_remote(target: str, mode: str, script: str, identity: str, batch: bool) -> tuple[int, str]:
-    """Copy the script to /tmp on the host, then run it (root or sudo)."""
+def run_remote(target: str, mode: str, script: str, identity: str, batch: bool,
+               via: tuple[str, str] | None = None) -> tuple[int, str]:
+    """Copy the script to /tmp on the host, then run it (root or sudo).
+
+    With `via` = (host, exec prefix) the script is staged on the host, copied
+    into the container with `<prefix> sh -c 'cat > …'`, and run there as root.
+    sudo (if needed) only happens in the -t step, so it can prompt."""
     base = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8"]
     if batch:
         base += ["-o", "BatchMode=yes", *ssh_identity_args(identity)]
-    up = subprocess.run([*base, target, "cat > /tmp/mct-enroll.sh"], input=script, text=True,
-                        capture_output=True)
+    host = via[0] if via else target
+    stage = "/tmp/mct-enroll.stage.sh" if via else "/tmp/mct-enroll.sh"
+    # bytes, not text=True: on Windows text mode would rewrite LF as CRLF and
+    # the remote sh chokes on "set -eu<CR>"
+    up = subprocess.run([*base, host, f"cat > {stage}"],
+                        input=script.replace("\r\n", "\n").encode("utf-8"), capture_output=True)
     if up.returncode != 0:
-        return up.returncode, up.stderr.strip()
-    proc = subprocess.run([*base, "-t", target, RUNNER.format(mode=mode)], text=True)
+        return up.returncode, up.stderr.decode(errors="ignore").strip()
+    if via:
+        prefix = via[1]
+        cmd = (
+            'if [ "$(id -u)" = 0 ]; then S=; else S=sudo; fi; '
+            f"$S {prefix} sh -c 'cat > /tmp/mct-enroll.sh' < {stage} && "
+            f"$S {prefix} sh -c 'sh /tmp/mct-enroll.sh {mode} root; rc=$?; rm -f /tmp/mct-enroll.sh; exit $rc'; "
+            f"rc=$?; rm -f {stage}; exit $rc"
+        )
+    else:
+        cmd = RUNNER.format(mode=mode)
+    proc = subprocess.run([*base, "-t", host, cmd], text=True)
     return proc.returncode, ""
 
 
@@ -244,9 +326,20 @@ def verify(target: str, identity: str) -> tuple[bool, str]:
 # ------------------------------------------------------------------ main
 
 def enroll_unit(inv: Inventory, u: Unit, pub: str, args: argparse.Namespace) -> bool:
+    """bootstrap → (tailscale) → verify → harden.  Tailscale comes before
+    verify on purpose: a container reached via its host has no route of its
+    own until it is on the tailnet."""
     identity = inv.identity_for(u)
     target = u.lan if args.lan and u.lan else u.ssh
+    via: tuple[str, str] | None = None
+    run_identity = identity
+    if u.via:
+        host = inv.by_name(u.via)
+        host_target = (host.lan if args.lan and host and host.lan else host.ssh) if host else u.via
+        via = (host_target, u.via_exec)
+        run_identity = inv.identity_for(host) if host else inv.identity
     con.print(f"\n[{PEACH}]▌{u.name}▐[/] [{DIM}]→ {target}"
+              f"{'  via ' + via[0] + ': ' + via[1] if via else ''}"
               f"{'  key=' + identity if identity else '  key=ssh default'}[/]")
 
     script = (REMOTE.replace("__PUBKEY__", pub)
@@ -254,47 +347,60 @@ def enroll_unit(inv: Inventory, u: Unit, pub: str, args: argparse.Namespace) -> 
                     .replace("__LISTEN__", "tailscale" if args.tailscale_only else "")
                     .replace("__TS_AUTHKEY__", args.ts_key or "")
                     .replace("__TS_TAGS__", args.ts_tags or "")
-                    .replace("__TS_HOSTNAME__", u.tailscale))
+                    .replace("__TS_HOSTNAME__", u.tailscale)
+                    .replace("__CT_KIND__", "incus" if u.via_exec.startswith("incus") else
+                             "pct" if u.via_exec.startswith("pct") else ""))
+
+    def remote(mode: str, batch: bool) -> tuple[int, str]:
+        return run_remote(target, mode, script, run_identity, batch=batch, via=via)
 
     already, _ = verify(target, identity)
     if already:
         ok("key login already works")
+    elif args.dry_run:
+        warn("would: ensure sshd running, add key" + (" (through host exec)" if via else " (interactive ssh, password ok)"))
     else:
-        if args.dry_run:
-            warn("would: ensure sshd running, add key (interactive ssh, password ok)")
-        else:
-            rc, err = run_remote(target, "bootstrap", script, identity, batch=False)
-            if rc != 0:
-                fail(f"bootstrap failed (exit {rc}) {err}")
-                return False
-            good, why = verify(target, identity)
-            if not good:
-                fail(f"key login still fails: {why or 'unknown'} — leaving password auth ON")
-                return False
-            ok("key login verified")
+        # via: host must already accept our key (BatchMode); direct: anything goes
+        rc, err = remote("bootstrap", batch=bool(via))
+        if rc != 0:
+            fail(f"bootstrap failed (exit {rc}) {err}")
+            return False
+        ok("sshd running, key installed")
 
     if args.ts_key:
         if args.dry_run:
             warn(f"would: install tailscale, `tailscale up` as {u.tailscale}"
                  f"{' tags=' + args.ts_tags if args.ts_tags else ''}")
         else:
-            rc, err = run_remote(target, "tailscale", script, identity, batch=True)
-            if rc == 4:
-                fail("no /dev/net/tun — LXC needs TUN passthrough (instructions printed above)")
+            rc, err = remote("tailscale", batch=not (via is None and not already))
+            if rc == 5:
+                warn("TrueNAS host: install Tailscale from the Apps catalog instead")
+            elif rc == 4:
+                fail("no /dev/net/tun — container needs TUN passthrough (instructions printed above)")
                 return False
-            if rc != 0:
+            elif rc != 0:
                 fail(f"tailscale join failed (exit {rc}) {err}")
                 return False
-            ok(f"tailscale joined as {u.tailscale}")
+            else:
+                ok(f"tailscale joined as {u.tailscale}")
+
+    if not already and not args.dry_run:
+        good, why = verify(target, identity)
+        if not good:
+            fail(f"key login to {target} fails: {why or 'unknown'} — leaving password auth ON")
+            if via and not args.ts_key:
+                warn("container has no route yet — re-run with --ts-key so it joins the tailnet")
+            return False
+        ok("key login verified")
 
     if args.no_harden:
         warn("harden skipped (--no-harden)")
         return True
     if args.dry_run:
-        warn(f"would: write sshd drop-in (key-only, root={args.root_login}"
+        warn(f"would: harden sshd (key-only, root={args.root_login}"
              f"{', tailscale-only listen' if args.tailscale_only else ''}), sshd -t, reload")
         return True
-    rc, err = run_remote(target, "harden", script, identity, batch=True)
+    rc, err = remote("harden", batch=True)
     if rc != 0:
         fail(f"harden failed (exit {rc}) {err} — config rolled back on host")
         return False
@@ -336,6 +442,7 @@ def cli(argv: list[str]) -> int:
     if not units:
         con.print(f"[{RED}]no units in inventory[/]")
         return 1
+    units = sorted(units, key=lambda u: bool(u.via))   # hosts before the containers they carry
 
     pub = public_key_for(inv.identity, args.pub)
     con.print(f"[{PEACH}]public key:[/] [{DIM}]{pub[:40]}…{pub[-24:]}[/]")

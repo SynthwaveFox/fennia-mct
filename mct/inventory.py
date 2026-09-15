@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -39,10 +40,20 @@ class Unit:
     kind: str = "host"             # host | pve | lxc | vm | appliance
     note: str = ""
     identity: str = ""             # key name in ~/.config/mct/keys, or a path; "" = inventory default
+    via: str = ""                  # unit name of the host that runs this container (incus / pct)
+    via_exec: str = ""             # command prefix on that host, e.g. "incus exec media --"
 
     def __post_init__(self) -> None:
+        self._ssh_explicit = bool(self.ssh)
         self.ssh = self.ssh or self.name
         self.tailscale = (self.tailscale or self.name).lower()
+        if self.via and not self.via_exec:
+            self.via_exec = f"incus exec {self.name} --"
+
+    @property
+    def direct_ssh(self) -> bool:
+        """Reach it with plain ssh (true unless it's only reachable via its host)."""
+        return not self.via or self._ssh_explicit
 
 
 @dataclass
@@ -116,7 +127,15 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
     for path in search_paths(explicit):
         if path.is_file():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            units = [Unit(**u) for u in data.get("units", [])]
+            units: list[Unit] = []
+            seen: set[str] = set()
+            for raw in data.get("units", []):
+                u = Unit(**raw)
+                if u.name in seen:
+                    print(f"mct: duplicate unit {u.name!r} in {path} — keeping the first", file=sys.stderr)
+                    continue
+                seen.add(u.name)
+                units.append(u)
             pve = Proxmox(**data["proxmox"]) if data.get("proxmox") else None
             return Inventory(
                 callsign=data.get("callsign", "Commander"),
@@ -139,9 +158,12 @@ def _unit_dict(u: Unit) -> dict:
         d.pop("ssh")
     if d["tailscale"] == u.name.lower():
         d.pop("tailscale")
-    for k in ("lan", "note", "identity"):
+    for k in ("lan", "note", "identity", "via", "via_exec"):
         if not d[k]:
             d.pop(k)
+    if u.via and d.get("via_exec") == f"incus exec {u.name} --":
+        d.pop("via_exec")
+    d.pop("_ssh_explicit", None)
     for k in ("tags", "services"):
         if not d[k]:
             d.pop(k)

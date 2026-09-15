@@ -59,6 +59,7 @@ class MCT(App[None]):
     BINDINGS = [
         Binding("enter", "connect", "ssh"),
         Binding("l", "connect_lan", "ssh via LAN"),
+        Binding("x", "connect_via", "exec via host", show=False),
         Binding("r", "refresh", "refresh"),
         Binding("slash", "filter", "filter", key_display="/"),
         Binding("escape", "clear_filter", show=False),
@@ -382,6 +383,14 @@ class MCT(App[None]):
             self.refresh_row(u)
         self.render_detail()
 
+    def _via(self, u: Unit) -> tuple[str, str]:
+        host = self.inv.by_name(u.via)
+        return (host.ssh if host else u.via, u.via_exec)
+
+    def _via_identity(self, u: Unit) -> str:
+        host = self.inv.by_name(u.via)
+        return self.inv.identity_for(host) if host else self.inv.identity
+
     def probe_all(self) -> None:
         for u in self.inv.units:
             peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
@@ -397,11 +406,16 @@ class MCT(App[None]):
         self.refresh_row(u)
         try:
             ident = self.inv.identity_for(u)
-            p = await ssh_probe(u, identity=ident)
-            if not p.ok and u.lan:
-                peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-                if peer is None or not peer.online:
-                    p = await ssh_probe(u, target=u.lan, identity=ident)
+            if u.direct_ssh:
+                p = await ssh_probe(u, identity=ident)
+                if not p.ok and u.lan:
+                    peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+                    if peer is None or not peer.online:
+                        p = await ssh_probe(u, target=u.lan, identity=ident)
+                if not p.ok and u.via:
+                    p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
+            else:
+                p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
         finally:
             self._probing.discard(u.name)
         old = self.probes.get(u.name)
@@ -470,8 +484,28 @@ class MCT(App[None]):
 
     def action_connect(self) -> None:
         u = self.selected
-        if u:
+        if u is None:
+            return
+        if u.direct_ssh:
             self._ssh(u.ssh, u.name, self.inv.identity_for(u))
+        else:
+            self.action_connect_via()
+
+    def action_connect_via(self) -> None:
+        """Shell into a container through its host (incus exec / pct exec)."""
+        u = self.selected
+        if u is None or not u.via:
+            self.notify("unit has no via: host", severity="warning", title="via")
+            return
+        host, prefix = self._via(u)
+        label = f"{u.name} (via {u.via})"
+        self.log_line("ssh", f"→ {label}", "ok")
+        with self.suspend():
+            print(f"\x1b[38;2;255;138;0m▌FENNIA▐ {prefix} on {host} …\x1b[0m")
+            rc = subprocess.call(["ssh", "-t", *ssh_identity_args(self._via_identity(u)), host,
+                                  f"{prefix} sh -c 'exec bash || exec sh'"])
+        self.log_line("ssh", f"← {label} (exit {rc})", "ok" if rc == 0 else "warn")
+        self.probe_unit(u)
 
     def action_connect_lan(self) -> None:
         u = self.selected

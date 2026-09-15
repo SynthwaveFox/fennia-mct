@@ -49,3 +49,15 @@ units:
     kind: lxc
     tags: [lab]
     services: [docker]
+    via: pve01                # no sshd of its own yet: reach it with `pct exec` on pve01
+    via_exec: pct exec 101 --
+
+  - name: truenas
+    kind: appliance
+    tags: [storage]
+    lan: admin@192.168.1.20
+
+  - name: sandbox
+    kind: lxc
+    tags: [lab]
+    via: truenas              # Incus instance — via_exec defaults to "incus exec sandbox --"

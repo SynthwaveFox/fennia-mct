@@ -66,6 +66,11 @@ class UnitForm(ModalScreen[FormResult]):
                 yield Label("services")
                 yield Input(", ".join(u.services) if u else "",
                             placeholder="pveproxy, docker, pihole-FTL  (systemd units)", id="f-svc")
+                yield Label("via")
+                yield Input(u.via if u else "", placeholder="host unit that runs this container (truenas, pve01)", id="f-via")
+                yield Label("via exec")
+                yield Input(u.via_exec if u and u.via else "",
+                            placeholder="incus exec <name> --   |   pct exec <vmid> --   (blank = incus)", id="f-viaexec")
                 yield Label("identity")
                 yield Input(u.identity if u else "", placeholder="key name in ~/.config/mct/keys — blank = default", id="f-ident")
                 yield Label("note")
@@ -110,6 +115,8 @@ class UnitForm(ModalScreen[FormResult]):
             kind=str(kind) if kind is not Select.BLANK else "host",
             note=self.query_one("#f-note", Input).value.strip(),
             identity=self.query_one("#f-ident", Input).value.strip(),
+            via=self.query_one("#f-via", Input).value.strip(),
+            via_exec=self.query_one("#f-viaexec", Input).value.strip(),
         )
 
     def action_save(self) -> None:
