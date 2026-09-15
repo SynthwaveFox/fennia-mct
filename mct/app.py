@@ -120,8 +120,8 @@ class MCT(App[None]):
         table.add_column("UNIT", key="name")
         table.add_column("TAG", key="tag")
         table.add_column("LINK", key="link", width=15)
-        table.add_column("RTT", key="rtt", width=7)
-        table.add_column("SVC", key="svc", width=5)
+        table.add_column("RTT", key="rtt", width=6)
+        table.add_column("SVC", key="svc", width=4)
 
         guests = self.query_one("#guests", DataTable)
         guests.add_column(" ", key="st", width=1)

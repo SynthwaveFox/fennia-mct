@@ -33,7 +33,7 @@ Screen {
     height: 1fr;
 }
 #left {
-    width: 62;
+    width: 68;
     min-width: 40;
 }
 #right {
@@ -84,6 +84,7 @@ DataTable > .datatable--hover {
 #units {
     height: 1fr;
     margin: 0 0 0 1;
+    scrollbar-size-horizontal: 0;   /* clip instead of a bar; [ ] resizes the pane */
 }
 #unit-actions {
     height: 1;
