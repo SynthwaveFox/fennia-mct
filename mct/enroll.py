@@ -376,7 +376,17 @@ def enroll_unit(inv: Inventory, u: Unit, pub: str, args: argparse.Namespace) -> 
         return run_remote(target, mode, script, run_identity, batch=batch, via=via)
 
     already, _ = verify(target, identity)
-    if already:
+    if already and args.pub:
+        # adding another device's key: we can get in, so install it now
+        if args.dry_run:
+            warn("would: install the given public key (through our own key)")
+        else:
+            rc, err = remote("bootstrap", batch=True)
+            if rc != 0:
+                fail(f"key install failed (exit {rc}) {err}")
+                return False
+            ok("extra key installed")
+    elif already:
         ok("key login already works")
     elif args.dry_run:
         warn("would: ensure sshd running, add key" + (" (through host exec)" if via else " (interactive ssh, password ok)"))
