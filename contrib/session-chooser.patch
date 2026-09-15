@@ -1,9 +1,17 @@
 # Diff for .config/yadm/system/usr-local-bin/session-chooser
-# Adds "master control" as a boot target. Runs on the bare VT (no compositor):
-# ter-132n has the double box-drawing glyphs, but not ▰▱◐◌ — those render as
-# boxes on the console. Launching from niri (Mod+M) is the full-fidelity path.
+#
+# "master control" boots straight into MCT: cage (single-window Wayland
+# kiosk, `pacman -S cage`) runs ghostty fullscreen with mct, so fonts, colours
+# and glyphs are the real thing — the bare VT font can't draw ▰▱◐◌. Quitting
+# mct (q) exits cage and returns to this menu.
+#
+# ~/.config/ghostty/mct is contrib/ghostty-mct.  mct is the pipx install.
 -    "niri" "terminal" "reboot" "power off")
 +    "niri" "master control" "terminal" "reboot" "power off")
    case "$choice" in
      "niri")      exec niri-session ;;
-+    "master control") exec "$HOME/.local/bin/mct" ;;
++    "master control")
++      cage -- ghostty --config-file="$HOME/.config/ghostty/mct" \
++                      --class=fennia.mct --title="FENNIA MCT" \
++                      -e "$HOME/.local/bin/mct"
++      ;;

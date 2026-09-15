@@ -285,6 +285,6 @@ Then wire it into the environment — every snippet is in `contrib/`:
 | niri | `contrib/niri-snippet.kdl` | `Mod+M` spawns it in ghostty with app-id `fennia.mct`, window rule with orange ring |
 | fuzzel / rofi | `contrib/fennia-mct.desktop` | launcher entry |
 | ghostty | `contrib/ghostty-mct` | palette that matches (slot 3 → `#ff8a00`, like your vconsole trick) |
-| greetd | `contrib/session-chooser.patch` | "master control" as a boot target next to niri |
+| greetd | `contrib/session-chooser.patch` | "master control" as a boot target next to niri — runs MCT in ghostty under `cage`, so it's the real UI, not the VT font |
 
 Windows taskbar/Start shortcut: target `wt.exe -p "FENNIA MCT"`.
