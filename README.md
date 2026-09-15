@@ -32,6 +32,17 @@ mct
 Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 `~/.config/mct/inventory.yaml`, `~/.mct.yaml`, then `~/.ssh/config` Host entries.
 
+## `mct ssh`
+
+Plain ssh, but with the unit's alias, user and key resolved from the inventory:
+
+```bash
+mct ssh pve                              # interactive
+mct ssh truenas-scale sudo incus list    # one command
+mct ssh --lan nas                        # use the lan: alias
+mct ssh --via sandbox                    # shell through the host's exec
+```
+
 ## Keys
 
 MCT just runs `ssh <alias>`, so anything OpenSSH would use works: `~/.ssh/id_*`,

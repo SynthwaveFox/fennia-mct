@@ -619,6 +619,33 @@ class MCT(App[None]):
         self.query_one("#units", DataTable).focus()
 
 
+def ssh_passthrough(argv: list[str]) -> int:
+    """mct ssh <unit> [command…] — plain ssh with the unit's alias + identity.
+    --lan uses the lan: alias; --via runs through the host's exec instead."""
+    lan = "--lan" in argv
+    via = "--via" in argv
+    rest = [a for a in argv if a not in ("--lan", "--via")]
+    if not rest or rest[0] in ("-h", "--help"):
+        print("usage: mct ssh [--lan|--via] <unit> [command…]", file=sys.stderr)
+        return 2
+    inv = load_inventory()
+    u = inv.by_name(rest[0])
+    if u is None:
+        print(f"mct ssh: no unit {rest[0]!r} in {pretty_path(inv.source)}", file=sys.stderr)
+        return 1
+    cmd = rest[1:]
+    if via or not u.direct_ssh:
+        host = inv.by_name(u.via)
+        target = host.ssh if host else u.via
+        ident = inv.identity_for(host) if host else inv.identity
+        inner = " ".join(cmd) if cmd else "sh -c 'exec bash || exec sh'"
+        argv2 = ["ssh", "-t", *ssh_identity_args(ident), target, f"{u.via_exec} {inner}"]
+    else:
+        target = u.lan if lan and u.lan else u.ssh
+        argv2 = ["ssh", *ssh_identity_args(inv.identity_for(u)), target, *cmd]
+    return subprocess.call(argv2)
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["keys"]:
@@ -627,8 +654,10 @@ def main(argv: list[str] | None = None) -> None:
     if argv[:1] == ["enroll"]:
         from .enroll import cli as enroll_cli
         sys.exit(enroll_cli(argv[1:]))
+    if argv[:1] == ["ssh"]:
+        sys.exit(ssh_passthrough(argv[1:]))
     ap = argparse.ArgumentParser(prog="mct", description="FENNIA Master Control Terminal",
-                                 epilog="subcommands:  mct keys gen|add|list|path   mct enroll [units…]")
+                                 epilog="subcommands:  mct ssh <unit> [cmd…]   mct keys gen|add|list|path   mct enroll [units…]")
     ap.add_argument("--no-boot", action="store_true", help="skip the boot sequence")
     ap.add_argument("-i", "--inventory", help="path to inventory.yaml")
     args = ap.parse_args(argv)
