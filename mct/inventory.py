@@ -13,12 +13,18 @@ from pathlib import Path
 import yaml
 
 DEFAULT_PATH = Path.home() / ".config" / "mct" / "inventory.yaml"
-SEARCH_PATHS = [
-    Path(os.environ.get("MCT_INVENTORY", "")),
-    Path.cwd() / "inventory.yaml",
-    DEFAULT_PATH,
-    Path.home() / ".mct.yaml",
-]
+
+
+def search_paths(explicit: str | Path | None = None) -> list[Path]:
+    """Candidate inventory files, most specific first. Evaluated lazily so
+    -i / $MCT_INVENTORY set after import still count."""
+    paths: list[Path] = []
+    if explicit:
+        paths.append(Path(explicit).expanduser())
+    if os.environ.get("MCT_INVENTORY"):
+        paths.append(Path(os.environ["MCT_INVENTORY"]).expanduser())
+    paths += [Path.cwd() / "inventory.yaml", DEFAULT_PATH, Path.home() / ".mct.yaml"]
+    return paths
 KINDS = ("host", "pve", "vm", "lxc", "appliance")
 
 
@@ -32,6 +38,7 @@ class Unit:
     services: list[str] = field(default_factory=list)   # systemd units to probe
     kind: str = "host"             # host | pve | lxc | vm | appliance
     note: str = ""
+    identity: str = ""             # key name in ~/.config/mct/keys, or a path; "" = inventory default
 
     def __post_init__(self) -> None:
         self.ssh = self.ssh or self.name
@@ -59,8 +66,12 @@ class Inventory:
     proxmox: Proxmox | None = None
     probe_interval: int = 30       # seconds between ssh probes
     tailscale_interval: int = 5    # seconds between tailscale status polls
+    identity: str = ""             # default key for every unit ("" = let ssh decide)
     source: str = ""
     path: Path = DEFAULT_PATH      # where save_inventory() writes
+
+    def identity_for(self, unit: Unit) -> str:
+        return unit.identity or self.identity
 
     def by_name(self, name: str) -> Unit | None:
         return next((u for u in self.units if u.name == name), None)
@@ -76,6 +87,13 @@ class Inventory:
 
     def remove(self, name: str) -> None:
         self.units = [u for u in self.units if u.name != name]
+
+
+def pretty_path(path: str | Path) -> str:
+    """~/.config/mct/inventory.yaml instead of the full home prefix."""
+    p = str(path)
+    home = str(Path.home())
+    return "~" + p[len(home):].replace("\\", "/") if p.startswith(home) else p
 
 
 def _from_ssh_config() -> list[Unit]:
@@ -94,9 +112,9 @@ def _from_ssh_config() -> list[Unit]:
     return units
 
 
-def load_inventory() -> Inventory:
-    for path in SEARCH_PATHS:
-        if path and path.is_file():
+def load_inventory(explicit: str | Path | None = None) -> Inventory:
+    for path in search_paths(explicit):
+        if path.is_file():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             units = [Unit(**u) for u in data.get("units", [])]
             pve = Proxmox(**data["proxmox"]) if data.get("proxmox") else None
@@ -107,6 +125,7 @@ def load_inventory() -> Inventory:
                 proxmox=pve,
                 probe_interval=int(data.get("probe_interval", 30)),
                 tailscale_interval=int(data.get("tailscale_interval", 5)),
+                identity=str(data.get("identity", "") or ""),
                 source=str(path),
                 path=path,
             )
@@ -120,7 +139,7 @@ def _unit_dict(u: Unit) -> dict:
         d.pop("ssh")
     if d["tailscale"] == u.name.lower():
         d.pop("tailscale")
-    for k in ("lan", "note"):
+    for k in ("lan", "note", "identity"):
         if not d[k]:
             d.pop(k)
     for k in ("tags", "services"):
@@ -139,6 +158,8 @@ def save_inventory(inv: Inventory) -> Path:
         "probe_interval": inv.probe_interval,
         "tailscale_interval": inv.tailscale_interval,
     }
+    if inv.identity:
+        data["identity"] = inv.identity
     if inv.proxmox:
         pve = asdict(inv.proxmox)
         if not pve["token_value"]:

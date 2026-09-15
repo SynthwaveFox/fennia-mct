@@ -7,6 +7,11 @@ squadron: FX-2 SQUADRON
 probe_interval: 30        # seconds between ssh telemetry probes
 tailscale_interval: 5     # seconds between `tailscale status` polls
 
+# Optional: default key for every unit. A bare name is looked up in
+# ~/.config/mct/keys (put keys there with `mct keys add <name>`); a path works too.
+# Units can override with their own `identity:`. Leave unset to let ssh/agent decide.
+# identity: mct_ed25519
+
 # Optional: Proxmox API for the guest panel. Make a read-only token:
 #   Datacenter → Permissions → API Tokens → add  root@pam!mct  (privilege separation ON)
 #   then grant PVEAuditor on / to the token. Export it as PVE_TOKEN.

@@ -16,29 +16,10 @@ from textual.screen import Screen
 from textual.widgets import RichLog, Static
 
 from . import __version__
-from .inventory import Inventory
+from .inventory import Inventory, pretty_path
 from .probes import TSStatus, tailscale_status
 from .theme import DIM, ORANGE, PEACH, RED
-
-WORDMARK = r"""
-███████╗███████╗███╗   ██╗███╗   ██╗██╗ █████╗
-██╔════╝██╔════╝████╗  ██║████╗  ██║██║██╔══██╗
-█████╗  █████╗  ██╔██╗ ██║██╔██╗ ██║██║███████║
-██╔══╝  ██╔══╝  ██║╚██╗██║██║╚██╗██║██║██╔══██║
-██║     ███████╗██║ ╚████║██║ ╚████║██║██║  ██║
-╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝
-""".strip("\n")
-
-# fennec — big ears, small face
-FOX = r"""
-   /\          /\
-  /  \        /  \
- /    \______/    \
- \   ◤        ◥   /
-  \    ▲    ▲    /
-   \      ▼     /
-    \__________/
-""".strip("\n")
+from .wordart import WORDMARK, submark, wordmark
 
 
 class BootScreen(Screen[TSStatus | None]):
@@ -56,12 +37,12 @@ class BootScreen(Screen[TSStatus | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="boot"):
             with Center():
-                yield Static(Text(FOX, style=PEACH), id="boot-fox")
+                yield Static(wordmark(0), id="boot-mark")
             with Center():
-                yield Static(Text(WORDMARK, style=f"bold {ORANGE}"), id="boot-mark")
+                yield Static(submark(), id="boot-submark")
             with Center():
                 yield Static(
-                    Text(f"MASTER CONTROL TERMINAL  v{__version__}   //   {self.inv.squadron}", style=DIM),
+                    Text(f"TERMINAL  v{__version__}   //   {self.inv.squadron}", style=DIM),
                     id="boot-sub",
                 )
             yield RichLog(id="boot-log", markup=True, highlight=False, wrap=True)
@@ -71,17 +52,28 @@ class BootScreen(Screen[TSStatus | None]):
     def on_mount(self) -> None:
         self.run_boot()
 
+    async def power_on(self) -> None:
+        """Light the wordmark top to bottom, then a quick flicker."""
+        mark = self.query_one("#boot-mark", Static)
+        for rows in range(1, len(WORDMARK) + 1):
+            mark.update(wordmark(rows))
+            await asyncio.sleep(0.06)
+        for rows in (3, len(WORDMARK), 7, len(WORDMARK)):
+            mark.update(wordmark(rows))
+            await asyncio.sleep(0.045)
+
     def _line(self, state: str, label: str, detail: str = "") -> None:
         log = self.query_one("#boot-log", RichLog)
         colour = {"OK": ORANGE, "..": DIM, "!!": RED}.get(state, PEACH)
-        dots = "." * max(2, 22 - len(label))
+        dots = "." * max(2, 16 - len(label))
         log.write(f"[{colour}]\\[ {state} ][/] [{PEACH}]{label}[/] [{DIM}]{dots}[/] {detail}")
 
     @work(exclusive=True)
     async def run_boot(self) -> None:
         inv = self.inv
-        await asyncio.sleep(0.25)
-        self._line("OK", "inventory", f"{len(inv.units)} units  [{DIM}]({inv.source})[/]")
+        await self.power_on()
+        await asyncio.sleep(0.2)
+        self._line("OK", "inventory", f"{len(inv.units)} units  [{DIM}]{pretty_path(inv.source)}[/]")
         await asyncio.sleep(0.18)
 
         self._line("..", "tailscale", "handshake")

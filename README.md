@@ -34,28 +34,74 @@ Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 
 ## Keys
 
-| key     | action                                             |
-|---------|----------------------------------------------------|
-| `enter` | ssh into the highlighted unit (app suspends, resumes on exit) |
-| `l`     | ssh via the unit's `lan:` alias (fallback when the tailnet is down) |
-| `r`     | refresh tailscale + probes + proxmox now           |
-| `/`     | filter units by name / tag / kind (`esc` clears)   |
-| `t`     | `tailscale ping` the unit, result goes to the log  |
-| `a`     | add a unit (or click **+ ADD** under the table)    |
-| `e`     | edit the highlighted unit (or click **EDIT**) — the form also has REMOVE |
-| `q`     | quit                                               |
+MCT just runs `ssh <alias>`, so anything OpenSSH would use works: `~/.ssh/id_*`,
+`IdentityFile` in `~/.ssh/config`, or an agent. The probe runs with
+`BatchMode=yes` and never prompts — passphrase keys must be in an agent.
 
-Add/edit writes straight back to the inventory file it loaded (or to
-`~/.config/mct/inventory.yaml` if it came from `~/.ssh/config`). The file is
-rewritten by the YAML dumper, so hand-written comments in it don't survive —
-keep notes in each unit's `note:` field instead.
+If you keep keys in a password manager and copy them onto each machine by hand,
+`mct keys add` does the paste correctly (permissions, line endings, trailing
+newline) into `~/.config/mct/keys/` — outside every repo on purpose:
 
-## Status glyphs
+```bash
+mct keys add mct_ed25519        # paste, then Ctrl-D  (Ctrl-Z Enter on Windows)
+mct keys add nas --from ~/Downloads/nas_key --pub "ssh-ed25519 AAAA… nas"
+mct keys list
+```
 
-- `●` orange — tailscale online, probe OK, all services active
-- `◐` amber — reachable but a service isn't `active`, or probe failed while tailscale says online
-- `○` dim — offline
-- `◌` — not in the tailnet and never probed
+Then point the inventory at a key — globally or per unit (the edit form has an
+`identity` field too):
+
+```yaml
+identity: mct_ed25519          # default for all units
+units:
+  - name: nas
+    identity: nas               # override; a path like ~/.ssh/foo also works
+```
+
+MCT passes `-i <key> -o IdentitiesOnly=yes` to both the probe and the
+interactive session. Leave `identity` unset and it behaves like plain ssh.
+
+## Enrolling servers (`mct enroll`)
+
+Pubkey-enables every unit in the inventory without ever locking you out:
+
+```bash
+mct keys gen                      # ~/.config/mct/keys/mct_ed25519  (once per client device)
+# set  identity: mct_ed25519  in the inventory
+mct enroll --dry-run              # what would happen
+mct enroll                        # all units;  mct enroll pve01 nas  for a subset
+```
+
+Per unit: **bootstrap** (ssh in with whatever works today — password is fine —
+install sshd if missing, enable + start it, add the key to `authorized_keys`),
+**verify** (BatchMode key-only login), then **harden** only if verify passed:
+a drop-in `/etc/ssh/sshd_config.d/10-mct.conf` with key-only auth, no
+passwords, `PermitRootLogin prohibit-password`, syntax-checked with `sshd -t`
+and rolled back if that fails, then reload. Works as root or via `sudo`
+(prompts once per host). Debian/Ubuntu/Proxmox, Arch, Alpine, Fedora.
+
+Flags: `--no-harden` (key + sshd only), `--root-login no`, `--lan` (use each
+unit's `lan:` alias), `--tailscale-only` (bind sshd to the tailnet IP — LAN ssh
+stops working, so keep the Proxmox console handy), `--pub` (use another key).
+
+### Joining hosts to the tailnet
+
+Add `--ts-key` (or `export TS_AUTHKEY=…`) and enroll also installs Tailscale on
+each host and brings it up as the unit's `tailscale:` hostname with the tags you
+choose, so MCT's peer matching just works:
+
+```bash
+export TS_AUTHKEY=tskey-auth-…            # admin console → Settings → Keys: reusable, tagged tag:server
+mct enroll --lan --ts-key "$TS_AUTHKEY"                       # everything, tag:server
+mct enroll --lan --ts-tags tag:server,tag:pve pve01           # PVE hosts get both tags
+```
+
+Order matters on first run: use `--lan` so the bootstrap goes over the LAN
+alias, then once the host is on the tailnet the MagicDNS alias takes over.
+LXCs need TUN passed through first — enroll detects the missing `/dev/net/tun`
+and prints the two lines for `/etc/pve/lxc/<id>.conf`.
+
+The matching tailnet policy is in `contrib/tailscale-policy.hujson`.
 
 ## The stack it assumes
 
@@ -119,10 +165,13 @@ keep notes in each unit's `note:` field instead.
 
 ```
 mct/app.py        main screen, pollers, ssh launch (App.suspend)
-mct/boot.py       boot sequence screen — runs the first tailscale poll
+mct/boot.py       boot sequence screen — powers on the wordmark, runs the first tailscale poll
+mct/wordart.py    baked figlet wordmark (ansi_shadow) + subline
 mct/forms.py      add / edit / remove unit modal
 mct/probes.py     tailscale_status / ssh_probe / proxmox_status (all async, never raise)
 mct/inventory.py  inventory.yaml loader, ~/.ssh/config fallback
+mct/keys.py       ~/.config/mct/keys + `mct keys gen|add|list|path`
+mct/enroll.py     `mct enroll` — bootstrap / verify / harden sshd on every unit
 mct/theme.py      Textual Theme built from the waybar/mako palette
 mct/theme.tcss    layout + double borders
 ```

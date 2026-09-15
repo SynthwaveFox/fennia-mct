@@ -14,6 +14,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .inventory import Proxmox, Unit
+from .keys import ssh_identity_args
 
 # ----------------------------------------------------------------- tailscale
 
@@ -133,7 +134,8 @@ class Probe:
         return f"{m}m"
 
 
-async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0) -> Probe:
+async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
+                    identity: str = "") -> Probe:
     """Run REMOTE_SCRIPT over ssh. `target` overrides the ssh alias (LAN fallback)."""
     script = REMOTE_SCRIPT.replace("{services}", " ".join(shlex.quote(s) for s in unit.services))
     argv = [
@@ -142,6 +144,7 @@ async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0)
         "-o", f"ConnectTimeout={int(timeout // 2) or 1}",
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "LogLevel=ERROR",
+        *ssh_identity_args(identity),
         target or unit.ssh,
         "sh", "-s",
     ]

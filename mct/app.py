@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import pathlib
 import subprocess
 import sys
 import time
@@ -26,7 +27,8 @@ from textual.widgets import Button, DataTable, Digits, Footer, Input, RichLog, S
 from . import __version__
 from .boot import BootScreen
 from .forms import FormResult, UnitForm
-from .inventory import Inventory, Unit, load_inventory, save_inventory
+from .inventory import Inventory, Unit, load_inventory, pretty_path, save_inventory
+from .keys import ssh_identity_args
 from .probes import PVEStatus, Probe, TSStatus, proxmox_status, ssh_probe, tailscale_status
 from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
 
@@ -137,7 +139,7 @@ class MCT(App[None]):
     def after_boot(self, ts: TSStatus | None) -> None:
         if ts is not None:
             self.apply_tailscale(ts)
-        self.log_line("mct", f"online · {len(self.inv.units)} units · inventory {self.inv.source}")
+        self.log_line("mct", f"online · {len(self.inv.units)} units · inventory {pretty_path(self.inv.source)}")
         self.set_interval(self.inv.tailscale_interval, self.poll_tailscale)
         self.set_interval(self.inv.probe_interval, self.probe_all)
         if self.inv.proxmox:
@@ -394,11 +396,12 @@ class MCT(App[None]):
         self._probing.add(u.name)
         self.refresh_row(u)
         try:
-            p = await ssh_probe(u)
+            ident = self.inv.identity_for(u)
+            p = await ssh_probe(u, identity=ident)
             if not p.ok and u.lan:
                 peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
                 if peer is None or not peer.online:
-                    p = await ssh_probe(u, target=u.lan)
+                    p = await ssh_probe(u, target=u.lan, identity=ident)
         finally:
             self._probing.discard(u.name)
         old = self.probes.get(u.name)
@@ -468,7 +471,7 @@ class MCT(App[None]):
     def action_connect(self) -> None:
         u = self.selected
         if u:
-            self._ssh(u.ssh, u.name)
+            self._ssh(u.ssh, u.name, self.inv.identity_for(u))
 
     def action_connect_lan(self) -> None:
         u = self.selected
@@ -477,7 +480,7 @@ class MCT(App[None]):
         if not u.lan:
             self.notify(f"{u.name} has no LAN alias", severity="warning", title="no lan route")
             return
-        self._ssh(u.lan, f"{u.name} (lan)")
+        self._ssh(u.lan, f"{u.name} (lan)", self.inv.identity_for(u))
 
     def action_refresh(self) -> None:
         self.log_line("mct", "manual refresh")
@@ -547,7 +550,7 @@ class MCT(App[None]):
             self.log_line("units", f"save failed: {exc}", "err")
             self.notify(str(exc), severity="error", title="inventory not saved")
         else:
-            self.log_line("units", f"saved {path}", "info")
+            self.log_line("units", f"saved {pretty_path(path)}", "info")
         self.rebuild_table()
         if action == "save":
             table = self.query_one("#units", DataTable)
@@ -583,17 +586,25 @@ class MCT(App[None]):
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog="mct", description="FENNIA Master Control Terminal")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["keys"]:
+        from .keys import cli
+        sys.exit(cli(argv[1:]))
+    if argv[:1] == ["enroll"]:
+        from .enroll import cli as enroll_cli
+        sys.exit(enroll_cli(argv[1:]))
+    ap = argparse.ArgumentParser(prog="mct", description="FENNIA Master Control Terminal",
+                                 epilog="subcommands:  mct keys gen|add|list|path   mct enroll [units…]")
     ap.add_argument("--no-boot", action="store_true", help="skip the boot sequence")
     ap.add_argument("-i", "--inventory", help="path to inventory.yaml")
     args = ap.parse_args(argv)
-    if args.inventory:
-        import os
-        os.environ["MCT_INVENTORY"] = args.inventory
-    inv = load_inventory()
+    if args.inventory and not pathlib.Path(args.inventory).expanduser().is_file():
+        print(f"mct: inventory not found: {args.inventory}", file=sys.stderr)
+        sys.exit(1)
+    inv = load_inventory(args.inventory)
     if not inv.units:
-        print("mct: no units found — write an inventory.yaml or add Host entries to ~/.ssh/config",
-              file=sys.stderr)
+        print("mct: no units found — write ~/.config/mct/inventory.yaml (see inventory.example.yaml) "
+              "or add Host entries to ~/.ssh/config", file=sys.stderr)
         sys.exit(1)
     MCT(inv, boot=not args.no_boot).run()
 

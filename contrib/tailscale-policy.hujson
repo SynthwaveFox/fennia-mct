@@ -1,0 +1,49 @@
+// Tailnet policy for the FX-2 squadron.
+// Paste into https://login.tailscale.com/admin/acls  (Access controls).
+//
+// Model:
+//   - your personal devices (laptop, desktop, phone) are untagged, owned by you;
+//     ADMIN below is your tailnet login — change it if you signed in differently
+//   - every server joined by `mct enroll --ts-key …` carries tag:server
+//     (+ tag:pve for Proxmox hosts if you pass --ts-tags tag:server,tag:pve)
+//   - you → servers: ssh + the few web UIs.  servers → you: nothing.
+//   - servers → servers: nothing by default (uncomment the rule if you need it)
+{
+  "groups": {
+    "group:admin": ["YOUR-LOGIN@example.com"],
+  },
+
+  "tagOwners": {
+    "tag:server": ["autogroup:admin"],
+    "tag:pve":    ["autogroup:admin"],
+  },
+
+  "acls": [
+    // admin devices reach every server on ssh
+    { "action": "accept", "src": ["group:admin"], "dst": ["tag:server:22"] },
+
+    // Proxmox web UI + ssh on PVE hosts
+    { "action": "accept", "src": ["group:admin"], "dst": ["tag:pve:22,8006"] },
+
+    // ICMP so `tailscale ping` / plain ping work from your devices
+    { "action": "accept", "src": ["group:admin"], "dst": ["tag:server:*"], "proto": "icmp" },
+
+    // your own devices can talk to each other freely
+    { "action": "accept", "src": ["group:admin"], "dst": ["group:admin:*"] },
+
+    // OPTIONAL: servers talking to each other (backups, monitoring)
+    // { "action": "accept", "src": ["tag:server"], "dst": ["tag:server:*"] },
+  ],
+
+  // Not using Tailscale SSH — OpenSSH with keys is the auth layer. Leave empty.
+  "ssh": [],
+
+  // Auto-checked whenever you save the policy. Test src/dst must be concrete
+  // users or tags (autogroups aren't allowed here) — replace the email with
+  // your tailnet login if it differs.
+  "tests": [
+    { "src": "YOUR-LOGIN@example.com", "accept": ["tag:server:22", "tag:pve:22", "tag:pve:8006"] },
+    { "src": "YOUR-LOGIN@example.com", "deny":   ["tag:server:8006", "tag:server:443"] },
+    { "src": "tag:server",         "deny":   ["group:admin:22", "tag:server:22"] },
+  ],
+}

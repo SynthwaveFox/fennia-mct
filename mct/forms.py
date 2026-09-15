@@ -66,6 +66,8 @@ class UnitForm(ModalScreen[FormResult]):
                 yield Label("services")
                 yield Input(", ".join(u.services) if u else "",
                             placeholder="pveproxy, docker, pihole-FTL  (systemd units)", id="f-svc")
+                yield Label("identity")
+                yield Input(u.identity if u else "", placeholder="key name in ~/.config/mct/keys — blank = default", id="f-ident")
                 yield Label("note")
                 yield Input(u.note if u else "", placeholder="free text", id="f-note")
             yield Static("", id="form-error")
@@ -107,6 +109,7 @@ class UnitForm(ModalScreen[FormResult]):
             services=_csv(self.query_one("#f-svc", Input).value),
             kind=str(kind) if kind is not Select.BLANK else "host",
             note=self.query_one("#f-note", Input).value.strip(),
+            identity=self.query_one("#f-ident", Input).value.strip(),
         )
 
     def action_save(self) -> None:
