@@ -1,9 +1,11 @@
 # ~/.local/share/applications/fennia-mct.desktop  — shows up in fuzzel/rofi
+# Full paths on purpose: launchers run with the compositor's environment,
+# which usually lacks ~/.local/bin on PATH. Replace YOURUSER.
 [Desktop Entry]
 Type=Application
 Name=FENNIA MCT
 Comment=Master Control Terminal — FX-2 squadron
-Exec=ghostty --class=fennia.mct --title="FENNIA MCT" -e mct
+Exec=ghostty --config-file=/home/YOURUSER/.config/ghostty/mct --class=fennia.mct --title=FENNIA\ MCT -e /home/YOURUSER/.local/bin/mct
 Icon=utilities-terminal
 Terminal=false
 Categories=System;Network;RemoteAccess;

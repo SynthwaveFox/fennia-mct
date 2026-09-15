@@ -1,16 +1,33 @@
 # ~/.config/ghostty/mct  — used via:  ghostty --config-file=~/.config/ghostty/mct -e mct
-# (or just put these in your main ghostty config)
-theme = catppuccin-mocha
+# Full palette inlined (Catppuccin Mocha with the orange rice), so it does not
+# depend on a bundled theme name. Slot 3 -> #ff8a00 like the vconsole trick.
 background = #181825
 foreground = #cdd6f4
 cursor-color = #ff8a00
+cursor-text = #181825
 selection-background = #4d443b
+selection-foreground = #cdd6f4
+palette = 0=#45475a
+palette = 1=#f38ba8
+palette = 2=#a6e3a1
 palette = 3=#ff8a00
+palette = 4=#89b4fa
+palette = 5=#f5c2e7
+palette = 6=#94e2d5
+palette = 7=#bac2de
+palette = 8=#585b70
+palette = 9=#f38ba8
+palette = 10=#a6e3a1
 palette = 11=#ffb347
+palette = 12=#89b4fa
+palette = 13=#f5c2e7
+palette = 14=#94e2d5
+palette = 15=#a6adc8
 font-family = JetBrainsMono Nerd Font
 font-size = 11
 window-padding-x = 6
 window-padding-y = 4
 window-decoration = false
 confirm-close-surface = false
-fullscreen = true
+# under niri leave this off (the window rule maximizes it); the boot path
+# passes --fullscreen and --font-size on the command line instead

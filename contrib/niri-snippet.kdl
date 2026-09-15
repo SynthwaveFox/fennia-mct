@@ -3,7 +3,7 @@
 // Mod+M — summon the master control terminal
 binds {
     Mod+M hotkey-overlay-title="FENNIA Master Control" {
-        spawn "ghostty" "--class=fennia.mct" "--title=FENNIA MCT" "-e" "mct";
+        spawn "ghostty" "--config-file=/home/YOURUSER/.config/ghostty/mct" "--class=fennia.mct" "--title=FENNIA MCT" "-e" "/home/YOURUSER/.local/bin/mct";
     }
 }
 
