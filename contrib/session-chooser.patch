@@ -5,16 +5,16 @@
 # and glyphs are the real thing — the bare VT font can't draw ▰▱◐◌. Quitting
 # mct (q) exits cage and returns to this menu.
 #
-# cage does not apply niri's output scale, so on a HiDPI panel the terminal
-# comes up tiny — GDK_SCALE=<your niri scale> makes GTK scale the whole window.
-# ~/.config/ghostty/mct is contrib/ghostty-mct.  mct is the pipx install.
+# Absolute paths on purpose: greetd runs this menu with a different $HOME
+# than your shell, and ghostty silently falls back to defaults if the config
+# file isn't found. ~/.config/ghostty/mct-boot is contrib/ghostty-mct with
+# `font-size = 16` (cage doesn't apply niri's output scale — tune to taste)
+# and `fullscreen = true`.
 -    "niri" "terminal" "reboot" "power off")
 +    "niri" "master control" "terminal" "reboot" "power off")
    case "$choice" in
      "niri")      exec niri-session ;;
 +    "master control")
-+      cage -- ghostty --config-file="$HOME/.config/ghostty/mct" \
-+                      --class=fennia.mct --title="FENNIA MCT" \
-+                      --fullscreen=true --font-size=22 \
-+                      -e "$HOME/.local/bin/mct"
++      cage -- ghostty --config-file=/home/YOURUSER/.config/ghostty/mct-boot \
++                      --class=fennia.mct -e /home/YOURUSER/.local/bin/mct
 +      ;;
