@@ -474,11 +474,11 @@ class MCT(App[None]):
 
     # ------------------------------------------------------------ actions
 
-    def _ssh(self, target: str, label: str) -> None:
+    def _ssh(self, target: str, label: str, identity: str = "") -> None:
         self.log_line("ssh", f"→ {label}", "ok")
         with self.suspend():
             print(f"\x1b[38;2;255;138;0m▌FENNIA▐ connecting to {label} …\x1b[0m")
-            rc = subprocess.call(["ssh", target])
+            rc = subprocess.call(["ssh", *ssh_identity_args(identity), target])
         self.log_line("ssh", f"← {label} (exit {rc})", "ok" if rc == 0 else "warn")
         u = self.inv.by_name(label.split()[0])
         if u:
