@@ -32,6 +32,33 @@ mct
 Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 `~/.config/mct/inventory.yaml`, `~/.mct.yaml`, then `~/.ssh/config` Host entries.
 
+## Controls
+
+| key     | action                                             |
+|---------|----------------------------------------------------|
+| `enter` | ssh into the highlighted unit (app suspends, resumes on exit); on a site row, open its URL |
+| `l`     | ssh via the unit's `lan:` alias (fallback when the tailnet is down) |
+| `x`     | shell through the unit's `via:` host (incus/pct exec) |
+| `r`     | refresh tailscale + probes + sites + proxmox now   |
+| `/`     | filter units and sites by name / tag / kind (`esc` clears) |
+| `t`     | `tailscale ping` the unit, result goes to the log  |
+| `a`     | add a unit (or click **+ ADD** under the table)    |
+| `e`     | edit the highlighted unit (or click **EDIT**) — the form also has REMOVE |
+| `[` `]` | narrower / wider UNITS pane (remembered as `units_width`) |
+| `q`     | quit                                               |
+
+Add/edit and pane resizing write straight back to the inventory file it loaded
+(or to `~/.config/mct/inventory.yaml` if it came from `~/.ssh/config`). The
+file is rewritten by the YAML dumper, so hand-written comments in it don't
+survive — keep notes in each unit's `note:` field instead.
+
+## Status glyphs
+
+- `●` orange — tailscale online, probe OK, all services active, all sites up
+- `◐` amber — reachable but a service isn't `active` or a site is down, or the probe failed while tailscale says online
+- `○` dim — offline (red for a site that's down)
+- `◌` — not in the tailnet and never probed / not yet checked
+
 ## Site checks
 
 Nest `sites:` under the unit that serves them and they show up as tree children
