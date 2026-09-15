@@ -58,6 +58,16 @@ class Unit:
 
 
 @dataclass
+class Site:
+    name: str
+    url: str
+    expect: int = 0                # exact status wanted; 0 = any 2xx/3xx
+    contains: str = ""             # body must contain this text
+    unit: str = ""                 # optional: unit that serves it (shown in its detail)
+    timeout: float = 8.0
+
+
+@dataclass
 class Proxmox:
     host: str                      # https://pve01:8006
     user: str                      # root@pam
@@ -79,6 +89,8 @@ class Inventory:
     probe_interval: int = 30       # seconds between ssh probes
     tailscale_interval: int = 5    # seconds between tailscale status polls
     identity: str = ""             # default key for every unit ("" = let ssh decide)
+    sites: list[Site] = field(default_factory=list)
+    http_interval: int = 60        # seconds between site checks
     source: str = ""
     path: Path = DEFAULT_PATH      # where save_inventory() writes
 
@@ -87,6 +99,9 @@ class Inventory:
 
     def by_name(self, name: str) -> Unit | None:
         return next((u for u in self.units if u.name == name), None)
+
+    def sites_for(self, unit: Unit) -> list[Site]:
+        return [s for s in self.sites if s.unit == unit.name]
 
     def upsert(self, unit: Unit, replace: str | None = None) -> None:
         """Add `unit`, or replace the unit currently named `replace`."""
@@ -138,6 +153,7 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
                 seen.add(u.name)
                 units.append(u)
             pve = Proxmox(**data["proxmox"]) if data.get("proxmox") else None
+            sites = [Site(**s) for s in data.get("sites", [])]
             return Inventory(
                 callsign=data.get("callsign", "Commander"),
                 squadron=data.get("squadron", "FX-2 SQUADRON"),
@@ -146,6 +162,8 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
                 probe_interval=int(data.get("probe_interval", 30)),
                 tailscale_interval=int(data.get("tailscale_interval", 5)),
                 identity=str(data.get("identity", "") or ""),
+                sites=sites,
+                http_interval=int(data.get("http_interval", 60)),
                 source=str(path),
                 path=path,
             )
@@ -189,6 +207,10 @@ def save_inventory(inv: Inventory) -> Path:
             pve.pop("token_value")
         data["proxmox"] = pve
     data["units"] = [_unit_dict(u) for u in inv.units]
+    if inv.sites:
+        data["http_interval"] = inv.http_interval
+        data["sites"] = [{k: v for k, v in asdict(s).items()
+                          if v not in ("", 0, 8.0) or k in ("name", "url")} for s in inv.sites]
     inv.path.parent.mkdir(parents=True, exist_ok=True)
     tmp = inv.path.with_suffix(".yaml.tmp")
     tmp.write_text(

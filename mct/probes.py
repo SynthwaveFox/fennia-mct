@@ -13,7 +13,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
-from .inventory import Proxmox, Unit
+from .inventory import Proxmox, Site, Unit
 from .keys import ssh_identity_args
 
 # ----------------------------------------------------------------- tailscale
@@ -202,6 +202,69 @@ async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
         except ValueError:
             continue
     return p
+
+
+# ----------------------------------------------------------------- http sites
+
+
+@dataclass
+class HttpResult:
+    ok: bool
+    status: int = 0
+    latency_ms: int = 0
+    tls_days: int | None = None    # days until the cert expires (https only)
+    error: str = ""
+    at: float = 0.0
+
+
+def _tls_days(host: str, port: int, timeout: float) -> int | None:
+    import datetime
+    import socket
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                cert = ss.getpeercert()
+        exp = datetime.datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
+        return (exp - datetime.datetime.utcnow()).days
+    except Exception:  # noqa: BLE001 — cert info is best-effort
+        return None
+
+
+def _http_fetch(site: Site) -> HttpResult:
+    import urllib.error
+    import urllib.parse
+    req = urllib.request.Request(site.url, headers={"User-Agent": "fennia-mct/1.0"}, method="GET")
+    t0 = time.perf_counter()
+    status, body = 0, b""
+    try:
+        with urllib.request.urlopen(req, timeout=site.timeout) as resp:
+            status = resp.status
+            body = resp.read(65536) if site.contains else b""
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        try:
+            body = exc.read(65536) if site.contains else b""
+        except Exception:  # noqa: BLE001
+            body = b""
+    except Exception as exc:  # noqa: BLE001
+        msg = str(getattr(exc, "reason", exc)).split("\n")[0]
+        return HttpResult(ok=False, latency_ms=int((time.perf_counter() - t0) * 1000),
+                          error=msg[:80], at=time.time())
+    ms = int((time.perf_counter() - t0) * 1000)
+    ok = (status == site.expect) if site.expect else (200 <= status < 400)
+    err = "" if ok else f"HTTP {status}"
+    if ok and site.contains and site.contains.encode() not in body:
+        ok, err = False, f"body lacks {site.contains!r}"
+    days = None
+    u = urllib.parse.urlsplit(site.url)
+    if u.scheme == "https" and u.hostname:
+        days = _tls_days(u.hostname, u.port or 443, site.timeout)
+    return HttpResult(ok=ok, status=status, latency_ms=ms, tls_days=days, error=err, at=time.time())
+
+
+async def http_check(site: Site) -> HttpResult:
+    return await asyncio.to_thread(_http_fetch, site)
 
 
 # ----------------------------------------------------------------- proxmox

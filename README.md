@@ -32,6 +32,26 @@ mct
 Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 `~/.config/mct/inventory.yaml`, `~/.mct.yaml`, then `~/.ssh/config` Host entries.
 
+## Site checks
+
+Add `sites:` to the inventory and a **SITES** panel appears under TELEMETRY:
+HTTP status, response time, and days until the TLS cert expires, checked from
+the machine running MCT every `http_interval` seconds (default 60).
+
+```yaml
+http_interval: 60
+sites:
+  - name: blog
+    url: https://blog.example.com
+    unit: media                 # optional: also listed in that unit's telemetry
+  - name: jellyfin
+    url: https://jellyfin.example.com/health
+    expect: 200                 # exact status; default is any 2xx/3xx
+    contains: Healthy           # body must contain this
+```
+
+Up/down transitions and certs under 14 days go to the log. `r` re-checks now.
+
 ## `mct ssh`
 
 Plain ssh, but with the unit's alias, user and key resolved from the inventory:
@@ -260,7 +280,7 @@ mct/app.py        main screen, pollers, ssh launch (App.suspend)
 mct/boot.py       boot sequence screen — powers on the wordmark, runs the first tailscale poll
 mct/wordart.py    baked figlet wordmark (ansi_shadow) + subline
 mct/forms.py      add / edit / remove unit modal
-mct/probes.py     tailscale_status / ssh_probe / proxmox_status (all async, never raise)
+mct/probes.py     tailscale_status / ssh_probe / http_check / proxmox_status (all async, never raise)
 mct/inventory.py  inventory.yaml loader, ~/.ssh/config fallback
 mct/keys.py       ~/.config/mct/keys + `mct keys gen|add|list|path`
 mct/enroll.py     `mct enroll` — bootstrap / verify / harden sshd on every unit

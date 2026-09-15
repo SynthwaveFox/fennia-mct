@@ -28,9 +28,9 @@ from textual.widgets import Button, DataTable, Digits, Footer, Input, RichLog, S
 from . import __version__
 from .boot import BootScreen
 from .forms import FormResult, UnitForm
-from .inventory import Inventory, Unit, load_inventory, pretty_path, save_inventory
+from .inventory import Inventory, Site, Unit, load_inventory, pretty_path, save_inventory
 from .keys import ssh_identity_args
-from .probes import PVEStatus, Probe, TSStatus, proxmox_status, ssh_probe, tailscale_status
+from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status
 from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
 
 GLYPH_UP = "●"
@@ -77,6 +77,7 @@ class MCT(App[None]):
         self.ts: TSStatus = TSStatus(ok=False, error="not polled yet")
         self.probes: dict[str, Probe] = {}
         self.pve: PVEStatus | None = None
+        self.http: dict[str, HttpResult] = {}
         self.filter_text = ""
         self._probing: set[str] = set()
         self.direct_ok: dict[str, bool] = {}   # last probe reached the unit by plain ssh
@@ -99,6 +100,7 @@ class MCT(App[None]):
                     yield Button("EDIT", id="btn-edit")
             with Vertical(id="right"):
                 yield Panel("", id="detail")
+                yield DataTable(id="sites", cursor_type="none", zebra_stripes=False)
                 yield DataTable(id="guests", cursor_type="none", zebra_stripes=False)
         yield RichLog(id="log", markup=True, highlight=False, wrap=False, max_lines=400)
         yield Footer()
@@ -130,6 +132,18 @@ class MCT(App[None]):
         guests.add_column("MEM", key="mem")
         guests.display = self.inv.proxmox is not None
 
+        sites = self.query_one("#sites", DataTable)
+        sites.border_title = "SITES"
+        sites.add_column(" ", key="st", width=1)
+        sites.add_column("SITE", key="name")
+        sites.add_column("URL", key="url")
+        sites.add_column("STATUS", key="status", width=7)
+        sites.add_column("RTT", key="rtt", width=7)
+        sites.add_column("TLS", key="tls", width=6)
+        sites.display = bool(self.inv.sites)
+        for s in self.inv.sites:
+            sites.add_row(*self.site_cells(s), key=s.name)
+
         self.rebuild_table()
         self.set_interval(1, self.tick_clock)
         self.tick_clock()
@@ -148,6 +162,9 @@ class MCT(App[None]):
         if self.inv.proxmox:
             self.set_interval(20, self.poll_proxmox)
             self.poll_proxmox()
+        if self.inv.sites:
+            self.set_interval(self.inv.http_interval, self.poll_sites)
+            self.poll_sites()
         if ts is None:
             self.poll_tailscale()
         self.probe_all()
@@ -344,6 +361,22 @@ class MCT(App[None]):
                         t.append(f"{name:<22}", style=TEXT)
                         t.append(state, style=RED)
                     t.append("\n")
+        linked = self.inv.sites_for(u)
+        if linked:
+            t.append("\n\n")
+            t.append("SITES\n", style=PEACH)
+            for s in linked:
+                r = self.http.get(s.name)
+                if r is None:
+                    t.append(f"  {GLYPH_UNKNOWN} ", style=DIM); t.append(f"{s.name:<22}", style=DIM); t.append("pending", style=DIM)
+                elif r.ok:
+                    t.append(f"  {GLYPH_UP} ", style=ORANGE); t.append(f"{s.name:<22}", style=TEXT)
+                    t.append(f"{r.status} · {r.latency_ms}ms", style=ORANGE)
+                    if r.tls_days is not None:
+                        t.append(f" · tls {r.tls_days}d", style=DIM if r.tls_days > 14 else AMBER)
+                else:
+                    t.append(f"  {GLYPH_DOWN} ", style=RED); t.append(f"{s.name:<22}", style=TEXT); t.append(r.error, style=RED)
+                t.append("\n")
         panel.update(t)
 
     # ------------------------------------------------------------ pollers
@@ -436,6 +469,50 @@ class MCT(App[None]):
         if self.selected and self.selected.name == u.name:
             self.render_detail()
 
+    # ------------------------------------------------------------ sites
+
+    def site_cells(self, s: Site) -> list[Text]:
+        r = self.http.get(s.name)
+        if r is None:
+            glyph, colour = GLYPH_UNKNOWN, DIM
+        elif r.ok:
+            glyph, colour = GLYPH_UP, ORANGE
+        else:
+            glyph, colour = GLYPH_DOWN, RED
+        url = s.url.replace("https://", "").replace("http://", "").rstrip("/")
+        status = Text("—", style=DIM) if r is None else \
+            Text(str(r.status) if r.status else "ERR", style=ORANGE if r.ok else RED)
+        rtt = Text("—", style=DIM) if r is None or not r.status else \
+            Text(f"{r.latency_ms}ms", style=ORANGE if r.latency_ms < 800 else AMBER)
+        if r is None or r.tls_days is None:
+            tls = Text("—", style=DIM)
+        else:
+            tls = Text(f"{r.tls_days}d", style=ORANGE if r.tls_days > 14 else AMBER if r.tls_days > 3 else RED)
+        return [Text(glyph, style=colour), Text(s.name, style=TEXT if (r and r.ok) else DIM),
+                Text(url, style=DIM), status, rtt, tls]
+
+    def poll_sites(self) -> None:
+        for s in self.inv.sites:
+            self.check_site(s)
+
+    @work(group="http")
+    async def check_site(self, s: Site) -> None:
+        r = await http_check(s)
+        old = self.http.get(s.name)
+        self.http[s.name] = r
+        if old is None or old.ok != r.ok:
+            if r.ok:
+                self.log_line("http", f"{s.name} up · {r.status} · {r.latency_ms}ms", "ok")
+            else:
+                self.log_line("http", f"{s.name} DOWN · {r.error}", "err")
+        if r.tls_days is not None and r.tls_days <= 14 and (old is None or old.tls_days != r.tls_days):
+            self.log_line("http", f"{s.name} TLS cert expires in {r.tls_days}d", "warn")
+        table = self.query_one("#sites", DataTable)
+        for col, cell in zip(("st", "name", "url", "status", "rtt", "tls"), self.site_cells(s)):
+            table.update_cell(s.name, col, cell)
+        if s.unit and self.selected and self.selected.name == s.unit:
+            self.render_detail()
+
     @work(exclusive=True, group="pve")
     async def poll_proxmox(self) -> None:
         assert self.inv.proxmox
@@ -524,6 +601,8 @@ class MCT(App[None]):
         self.log_line("mct", "manual refresh")
         self.poll_tailscale()
         self.probe_all()
+        if self.inv.sites:
+            self.poll_sites()
         if self.inv.proxmox:
             self.poll_proxmox()
 
