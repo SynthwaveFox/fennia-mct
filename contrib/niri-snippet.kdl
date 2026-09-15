@@ -1,0 +1,22 @@
+// Paste into ~/.config/niri/config.kdl
+
+// Mod+M — summon the master control terminal
+binds {
+    Mod+M hotkey-overlay-title="FENNIA Master Control" {
+        spawn "ghostty" "--class=fennia.mct" "--title=FENNIA MCT" "-e" "mct";
+    }
+}
+
+// Give it its own window rule: opens maximized in the column, orange ring,
+// never gets a shadow-less floating state by accident.
+window-rule {
+    match app-id="^fennia\.mct$"
+    open-maximized true
+    focus-ring {
+        active-color "#ff8a00"
+    }
+    border {
+        active-color "#ff8a00"
+        inactive-color "#4d443b"
+    }
+}

@@ -1,0 +1,19 @@
+[project]
+name = "fennia-mct"
+version = "0.1.0"
+description = "FENNIA Master Control Terminal — SSH selector + live fleet status for the FX-2 squadron"
+requires-python = ">=3.11"
+dependencies = ["textual>=1.0", "pyyaml>=6"]
+
+[project.scripts]
+mct = "mct.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mct*"]
+
+[tool.setuptools.package-data]
+mct = ["*.tcss"]

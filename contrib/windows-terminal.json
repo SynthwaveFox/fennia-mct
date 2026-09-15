@@ -1,0 +1,43 @@
+{
+  "//": "Merge into %LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+  "profiles": {
+    "list": [
+      {
+        "name": "FENNIA MCT",
+        "guid": "{f3a11a00-ff8a-4d00-b0c4-0000fe111a01}",
+        "commandline": "%USERPROFILE%\.local\bin\mct.exe",
+        "startingDirectory": "%USERPROFILE%",
+        "icon": "🦊",
+        "tabTitle": "FENNIA MCT",
+        "suppressApplicationTitle": true,
+        "colorScheme": "Fennia",
+        "font": { "face": "JetBrainsMono Nerd Font", "size": 11 },
+        "cursorShape": "filledBox",
+        "experimental.retroTerminalEffect": true,
+        "padding": "4",
+        "scrollbarState": "hidden",
+        "closeOnExit": "always"
+      }
+    ]
+  },
+  "schemes": [
+    {
+      "name": "Fennia",
+      "background": "#181825",
+      "foreground": "#CDD6F4",
+      "cursorColor": "#FF8A00",
+      "selectionBackground": "#4D443B",
+      "black": "#45475A",  "brightBlack": "#585B70",
+      "red": "#F38BA8",    "brightRed": "#F38BA8",
+      "green": "#A6E3A1",  "brightGreen": "#A6E3A1",
+      "yellow": "#FF8A00", "brightYellow": "#FFB347",
+      "blue": "#89B4FA",   "brightBlue": "#89B4FA",
+      "purple": "#F5C2E7", "brightPurple": "#F5C2E7",
+      "cyan": "#94E2D5",   "brightCyan": "#94E2D5",
+      "white": "#BAC2DE",  "brightWhite": "#A6ADC8"
+    }
+  ],
+  "actions": [
+    { "command": { "action": "newTab", "profile": "FENNIA MCT" }, "keys": "ctrl+shift+m" }
+  ]
+}

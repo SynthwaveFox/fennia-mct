@@ -1,0 +1,9 @@
+# Diff for .config/yadm/system/usr-local-bin/session-chooser
+# Adds "master control" as a boot target. Runs on the bare VT (no compositor):
+# ter-132n has the double box-drawing glyphs, but not ▰▱◐◌ — those render as
+# boxes on the console. Launching from niri (Mod+M) is the full-fidelity path.
+-    "niri" "terminal" "reboot" "power off")
++    "niri" "master control" "terminal" "reboot" "power off")
+   case "$choice" in
+     "niri")      exec niri-session ;;
++    "master control") exec "$HOME/.local/bin/mct" ;;

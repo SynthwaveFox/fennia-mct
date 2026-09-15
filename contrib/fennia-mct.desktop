@@ -1,0 +1,11 @@
+# ~/.local/share/applications/fennia-mct.desktop  — shows up in fuzzel/rofi
+[Desktop Entry]
+Type=Application
+Name=FENNIA MCT
+Comment=Master Control Terminal — FX-2 squadron
+Exec=ghostty --class=fennia.mct --title="FENNIA MCT" -e mct
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Network;RemoteAccess;
+Keywords=ssh;tailscale;proxmox;fleet;
+StartupWMClass=fennia.mct

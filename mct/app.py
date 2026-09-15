@@ -1,0 +1,602 @@
+"""FENNIA MCT — main screen.
+
+    ╔═ UNITS ═══════════╗╔═ TELEMETRY ══════════════════════════╗
+    ║ ● pve01  pve  9ms ║║ pve01 · linux · 100.64.0.1           ║
+    ║ ◐ nas    lab  --- ║║ up 41d 3h · load 0.8 0.7 0.6          ║
+    ║ ○ ct-101 lab  --- ║║ mem ▰▰▰▰▰▱▱▱ 61%   disk ▰▰▰▱▱▱▱▱ 34%  ║
+    ╚═══════════════════╝╚══════════════════════════════════════╝
+    ╔═ LOG ═════════════════════════════════════════════════════╗
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+from rich.text import Text
+from textual import on, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Button, DataTable, Digits, Footer, Input, RichLog, Static
+
+from . import __version__
+from .boot import BootScreen
+from .forms import FormResult, UnitForm
+from .inventory import Inventory, Unit, load_inventory, save_inventory
+from .probes import PVEStatus, Probe, TSStatus, proxmox_status, ssh_probe, tailscale_status
+from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
+
+GLYPH_UP = "●"
+GLYPH_HALF = "◐"
+GLYPH_DOWN = "○"
+GLYPH_UNKNOWN = "◌"
+
+
+def gauge(pct: float, width: int = 10) -> Text:
+    filled = round(pct / 100 * width)
+    colour = ORANGE if pct < 70 else AMBER if pct < 90 else RED
+    t = Text()
+    t.append("▰" * filled, style=colour)
+    t.append("▱" * (width - filled), style=DIM)
+    t.append(f" {pct:3.0f}%", style=TEXT)
+    return t
+
+
+class Panel(Static):
+    """A bordered block with a title — the gum-style double border lives in CSS."""
+
+
+class MCT(App[None]):
+    TITLE = "FENNIA MCT"
+    CSS_PATH = "theme.tcss"
+    ENABLE_COMMAND_PALETTE = False
+    BINDINGS = [
+        Binding("enter", "connect", "ssh"),
+        Binding("l", "connect_lan", "ssh via LAN"),
+        Binding("r", "refresh", "refresh"),
+        Binding("slash", "filter", "filter", key_display="/"),
+        Binding("escape", "clear_filter", show=False),
+        Binding("t", "tailscale_ping", "ts ping"),
+        Binding("a", "add_unit", "add"),
+        Binding("e", "edit_unit", "edit"),
+        Binding("q", "quit", "quit"),
+    ]
+
+    def __init__(self, inv: Inventory, boot: bool = True) -> None:
+        super().__init__()
+        self.inv = inv
+        self.boot = boot
+        self.ts: TSStatus = TSStatus(ok=False, error="not polled yet")
+        self.probes: dict[str, Probe] = {}
+        self.pve: PVEStatus | None = None
+        self.filter_text = ""
+        self._probing: set[str] = set()
+
+    # ------------------------------------------------------------ layout
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="topbar"):
+            yield Static(Text.assemble(("▌", ORANGE), ("FENNIA", f"bold {ORANGE}"), ("▐ ", ORANGE),
+                                       ("MASTER CONTROL", f"bold {PEACH}"),
+                                       (f"  v{__version__}", DIM)), id="brand")
+            yield Static("", id="tsline")
+            yield Digits("--:--:--", id="clock")
+        with Horizontal(id="main"):
+            with Vertical(id="left"):
+                yield Input(placeholder="filter units…", id="filter")
+                yield DataTable(id="units", cursor_type="row", zebra_stripes=False)
+                with Horizontal(id="unit-actions"):
+                    yield Button("+ ADD", id="btn-add")
+                    yield Button("EDIT", id="btn-edit")
+            with Vertical(id="right"):
+                yield Panel("", id="detail")
+                yield DataTable(id="guests", cursor_type="none", zebra_stripes=False)
+        yield RichLog(id="log", markup=True, highlight=False, wrap=False, max_lines=400)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.register_theme(FENNIA)
+        self.theme = "fennia"
+        self.query_one("#units", DataTable).border_title = "UNITS"
+        self.query_one("#detail", Panel).border_title = "TELEMETRY"
+        self.query_one("#guests", DataTable).border_title = "PROXMOX GUESTS"
+        self.query_one("#log", RichLog).border_title = "LOG"
+        self.query_one("#filter", Input).display = False
+
+        table = self.query_one("#units", DataTable)
+        table.add_column(" ", key="st", width=1)
+        table.add_column("UNIT", key="name")
+        table.add_column("TAG", key="tag")
+        table.add_column("LINK", key="link")
+        table.add_column("RTT", key="rtt")
+        table.add_column("SVC", key="svc")
+
+        guests = self.query_one("#guests", DataTable)
+        guests.add_column(" ", key="st", width=1)
+        guests.add_column("ID", key="id", width=4)
+        guests.add_column("NAME", key="name")
+        guests.add_column("TYPE", key="type", width=4)
+        guests.add_column("NODE", key="node")
+        guests.add_column("CPU", key="cpu", width=5)
+        guests.add_column("MEM", key="mem")
+        guests.display = self.inv.proxmox is not None
+
+        self.rebuild_table()
+        self.set_interval(1, self.tick_clock)
+        self.tick_clock()
+
+        if self.boot:
+            self.push_screen(BootScreen(self.inv), callback=self.after_boot)
+        else:
+            self.after_boot(None)
+
+    def after_boot(self, ts: TSStatus | None) -> None:
+        if ts is not None:
+            self.apply_tailscale(ts)
+        self.log_line("mct", f"online · {len(self.inv.units)} units · inventory {self.inv.source}")
+        self.set_interval(self.inv.tailscale_interval, self.poll_tailscale)
+        self.set_interval(self.inv.probe_interval, self.probe_all)
+        if self.inv.proxmox:
+            self.set_interval(20, self.poll_proxmox)
+            self.poll_proxmox()
+        if ts is None:
+            self.poll_tailscale()
+        self.probe_all()
+        self.query_one("#units", DataTable).focus()
+
+    # ------------------------------------------------------------ helpers
+
+    def log_line(self, src: str, msg: str, level: str = "info") -> None:
+        colour = {"info": PEACH, "ok": ORANGE, "warn": AMBER, "err": RED}[level]
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.query_one("#log", RichLog).write(f"[{DIM}]{stamp}[/]  [{colour}]{src:<9}[/] {msg}")
+
+    def tick_clock(self) -> None:
+        self.query_one("#clock", Digits).update(datetime.now().strftime("%H:%M:%S"))
+
+    @property
+    def visible_units(self) -> list[Unit]:
+        f = self.filter_text.lower()
+        if not f:
+            return self.inv.units
+        return [u for u in self.inv.units
+                if f in u.name.lower() or any(f in t.lower() for t in u.tags) or f in u.kind]
+
+    @property
+    def selected(self) -> Unit | None:
+        table = self.query_one("#units", DataTable)
+        if table.row_count == 0:
+            return None
+        key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        return self.inv.by_name(key) if key else None
+
+    def status_of(self, u: Unit) -> tuple[str, str]:
+        """(glyph, colour) for a unit combining tailscale + probe."""
+        peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+        probe = self.probes.get(u.name)
+        if probe and probe.ok:
+            if probe.services and any(s != "active" for s in probe.services.values()):
+                return GLYPH_HALF, AMBER
+            return GLYPH_UP, ORANGE
+        if peer is not None:
+            if peer.online:
+                return (GLYPH_HALF, PEACH) if probe is None else (GLYPH_HALF, AMBER)
+            return GLYPH_DOWN, DIM
+        if probe is not None and not probe.ok:
+            return GLYPH_DOWN, DIM
+        return GLYPH_UNKNOWN, DIM
+
+    # ------------------------------------------------------------ table
+
+    def rebuild_table(self) -> None:
+        table = self.query_one("#units", DataTable)
+        current = None
+        if table.row_count:
+            current = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        table.clear()
+        for u in self.visible_units:
+            table.add_row(*self.row_cells(u), key=u.name)
+        if current:
+            try:
+                idx = table.get_row_index(current)
+                table.move_cursor(row=idx)
+            except Exception:  # noqa: BLE001 — row filtered out
+                pass
+        self.render_detail()
+
+    def row_cells(self, u: Unit) -> list[Text | str]:
+        glyph, colour = self.status_of(u)
+        peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+        probe = self.probes.get(u.name)
+        name = Text(u.name, style=f"bold {TEXT}" if glyph != GLYPH_DOWN else DIM)
+        tag = Text(u.tags[0] if u.tags else u.kind, style=PEACH)
+        if peer is None:
+            link = Text("—", style=DIM)
+        elif not peer.online:
+            link = Text("offline", style=DIM)
+        elif peer.relay and not peer.ip:
+            link = Text(f"relay {peer.relay}", style=AMBER)
+        else:
+            link = Text(peer.ip or "direct", style=DIM)
+        if probe is None:
+            rtt = Text("…" if u.name in self._probing else "—", style=DIM)
+        elif probe.ok:
+            rtt = Text(f"{probe.latency_ms}ms", style=ORANGE if probe.latency_ms < 300 else AMBER)
+        else:
+            rtt = Text("✕", style=RED)
+        if probe and probe.ok and probe.services:
+            good = sum(1 for s in probe.services.values() if s == "active")
+            total = len(probe.services)
+            svc = Text(f"{good}/{total}", style=ORANGE if good == total else RED)
+        else:
+            svc = Text("—", style=DIM)
+        return [Text(glyph, style=colour), name, tag, link, rtt, svc]
+
+    def refresh_row(self, u: Unit) -> None:
+        table = self.query_one("#units", DataTable)
+        try:
+            table.get_row_index(u.name)
+        except Exception:  # noqa: BLE001
+            return
+        for col, cell in zip(("st", "name", "tag", "link", "rtt", "svc"), self.row_cells(u)):
+            table.update_cell(u.name, col, cell)
+
+    @on(DataTable.RowHighlighted, "#units")
+    def _on_highlight(self) -> None:
+        self.render_detail()
+
+    @on(DataTable.RowSelected, "#units")
+    def _on_select(self) -> None:
+        self.action_connect()
+
+    # ------------------------------------------------------------ detail
+
+    def render_detail(self) -> None:
+        panel = self.query_one("#detail", Panel)
+        u = self.selected
+        if u is None:
+            panel.update(Text("no unit selected", style=DIM))
+            return
+        peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+        probe = self.probes.get(u.name)
+        glyph, colour = self.status_of(u)
+
+        t = Text()
+        t.append(f"{glyph} ", style=colour)
+        t.append(u.name.upper(), style=f"bold {ORANGE}")
+        t.append(f"   {u.kind}", style=PEACH)
+        if u.tags:
+            t.append("   " + "  ".join(f"#{x}" for x in u.tags), style=DIM)
+        t.append("\n")
+        if u.note:
+            t.append(f"{u.note}\n", style=DIM)
+        t.append("\n")
+
+        # link
+        t.append("LINK   ", style=PEACH)
+        if peer is None:
+            t.append("not in tailnet" if self.ts.ok else f"tailscale: {self.ts.error}", style=DIM)
+        else:
+            t.append(peer.dns or peer.hostname, style=TEXT)
+            t.append(f"  {peer.ip}", style=DIM)
+            t.append(f"  {peer.os}", style=DIM)
+            if peer.online:
+                t.append("  online", style=ORANGE)
+                if peer.relay:
+                    t.append(f"  via {peer.relay}", style=AMBER)
+            else:
+                t.append("  offline", style=RED)
+                if peer.last_seen and not peer.last_seen.startswith("0001"):
+                    t.append(f"  last {peer.last_seen[:16].replace('T', ' ')}", style=DIM)
+        t.append("\n")
+        t.append("SSH    ", style=PEACH)
+        t.append(u.ssh, style=TEXT)
+        if u.lan:
+            t.append(f"   lan: {u.lan}", style=DIM)
+        t.append("\n\n")
+
+        # probe
+        if probe is None:
+            t.append("probing…" if u.name in self._probing else "no telemetry yet", style=DIM)
+        elif not probe.ok:
+            t.append("PROBE  ", style=PEACH)
+            t.append(probe.error, style=RED)
+        else:
+            age = int(time.time() - probe.at)
+            t.append("UP     ", style=PEACH)
+            t.append(probe.uptime_h, style=TEXT)
+            t.append("     LOAD ", style=PEACH)
+            t.append(probe.load or "—", style=TEXT)
+            t.append("     RTT ", style=PEACH)
+            t.append(f"{probe.latency_ms}ms", style=TEXT)
+            t.append(f"   ({age}s ago)", style=DIM)
+            t.append("\n")
+            t.append("MEM    ", style=PEACH)
+            t.append_text(gauge(probe.mem_pct))
+            t.append(f"  {probe.mem_used_kb / 1048576:.1f}G / {probe.mem_total_kb / 1048576:.1f}G", style=DIM)
+            t.append("\n")
+            t.append("DISK   ", style=PEACH)
+            t.append_text(gauge(probe.disk_pct))
+            t.append(f"  {probe.disk_used_kb / 1048576:.0f}G / {probe.disk_total_kb / 1048576:.0f}G on /", style=DIM)
+            if probe.services:
+                t.append("\n\n")
+                t.append("SERVICES\n", style=PEACH)
+                for name, state in probe.services.items():
+                    if state == "active":
+                        t.append(f"  {GLYPH_UP} ", style=ORANGE)
+                        t.append(f"{name:<22}", style=TEXT)
+                        t.append("active", style=ORANGE)
+                    elif state in ("inactive", "unknown"):
+                        t.append(f"  {GLYPH_DOWN} ", style=DIM)
+                        t.append(f"{name:<22}", style=DIM)
+                        t.append(state, style=DIM)
+                    else:
+                        t.append(f"  {GLYPH_HALF} ", style=RED)
+                        t.append(f"{name:<22}", style=TEXT)
+                        t.append(state, style=RED)
+                    t.append("\n")
+        panel.update(t)
+
+    # ------------------------------------------------------------ pollers
+
+    @work(exclusive=True, group="ts")
+    async def poll_tailscale(self) -> None:
+        ts = await tailscale_status()
+        self.apply_tailscale(ts)
+
+    def apply_tailscale(self, ts: TSStatus) -> None:
+        was_ok = self.ts.ok
+        prev = {k: p.online for k, p in self.ts.peers.items()} if self.ts.ok else {}
+        self.ts = ts
+        line = self.query_one("#tsline", Static)
+        if ts.ok:
+            online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
+            line.update(Text.assemble(("TAILNET ", PEACH), (f"{online}", f"bold {ORANGE}"),
+                                      (f"/{len(self.inv.units)} online", TEXT),
+                                      (f"   as {ts.self_name}", DIM), ("   ", ""),
+                                      (self.inv.squadron, f"bold {ORANGE}")))
+            if not was_ok:
+                self.log_line("tailscale", f"link up · {online} units online", "ok")
+            for u in self.inv.units:
+                p = ts.peers.get(u.tailscale)
+                if p is None:
+                    continue
+                before = prev.get(u.tailscale)
+                if before is not None and before != p.online:
+                    self.log_line("tailscale", f"{u.name} {'came online' if p.online else 'went offline'}",
+                                  "ok" if p.online else "warn")
+                    if p.online:
+                        self.probe_unit(u)
+        else:
+            line.update(Text.assemble(("TAILNET ", PEACH), ("down", f"bold {RED}"),
+                                      (f"  {ts.error}", DIM)))
+            if was_ok:
+                self.log_line("tailscale", ts.error, "err")
+        for u in self.inv.units:
+            self.refresh_row(u)
+        self.render_detail()
+
+    def probe_all(self) -> None:
+        for u in self.inv.units:
+            peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+            if peer is not None and not peer.online and not u.lan:
+                continue  # don't waste a timeout on a node tailscale says is down
+            self.probe_unit(u)
+
+    @work(group="probe")
+    async def probe_unit(self, u: Unit) -> None:
+        if u.name in self._probing:
+            return
+        self._probing.add(u.name)
+        self.refresh_row(u)
+        try:
+            p = await ssh_probe(u)
+            if not p.ok and u.lan:
+                peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
+                if peer is None or not peer.online:
+                    p = await ssh_probe(u, target=u.lan)
+        finally:
+            self._probing.discard(u.name)
+        old = self.probes.get(u.name)
+        self.probes[u.name] = p
+        if old is None or old.ok != p.ok:
+            if p.ok:
+                self.log_line("probe", f"{u.name} responding · {p.latency_ms}ms · up {p.uptime_h}", "ok")
+            else:
+                self.log_line("probe", f"{u.name} unreachable · {p.error}", "warn")
+        elif p.ok and old.ok:
+            for svc, state in p.services.items():
+                if old.services.get(svc) != state:
+                    self.log_line("service", f"{u.name}/{svc} → {state}",
+                                  "ok" if state == "active" else "err")
+        self.refresh_row(u)
+        if self.selected and self.selected.name == u.name:
+            self.render_detail()
+
+    @work(exclusive=True, group="pve")
+    async def poll_proxmox(self) -> None:
+        assert self.inv.proxmox
+        st = await proxmox_status(self.inv.proxmox)
+        prev = self.pve
+        self.pve = st
+        table = self.query_one("#guests", DataTable)
+        if not st.ok:
+            if prev is None or prev.ok:
+                self.log_line("proxmox", st.error, "err")
+            table.border_title = "PROXMOX GUESTS · offline"
+            return
+        running = sum(1 for g in st.guests if g.status == "running")
+        table.border_title = f"PROXMOX GUESTS · {running}/{len(st.guests)} running"
+        if prev is None or not prev.ok:
+            self.log_line("proxmox", f"{len(st.guests)} guests · {running} running", "ok")
+        elif prev.ok:
+            before = {g.vmid: g.status for g in prev.guests}
+            for g in st.guests:
+                if before.get(g.vmid) not in (None, g.status):
+                    self.log_line("proxmox", f"{g.name} ({g.vmid}) → {g.status}",
+                                  "ok" if g.status == "running" else "warn")
+        table.clear()
+        for g in st.guests:
+            up = g.status == "running"
+            table.add_row(
+                Text(GLYPH_UP if up else GLYPH_DOWN, style=ORANGE if up else DIM),
+                Text(str(g.vmid), style=DIM),
+                Text(g.name, style=TEXT if up else DIM),
+                Text("VM" if g.kind == "qemu" else "CT", style=PEACH),
+                Text(g.node, style=DIM),
+                Text(f"{g.cpu * 100:3.0f}%" if up else "—", style=TEXT if up else DIM),
+                Text(f"{g.mem / 2**30:.1f}/{g.maxmem / 2**30:.0f}G" if up else "—", style=TEXT if up else DIM),
+                key=str(g.vmid),
+            )
+
+    # ------------------------------------------------------------ actions
+
+    def _ssh(self, target: str, label: str) -> None:
+        self.log_line("ssh", f"→ {label}", "ok")
+        with self.suspend():
+            print(f"\x1b[38;2;255;138;0m▌FENNIA▐ connecting to {label} …\x1b[0m")
+            rc = subprocess.call(["ssh", target])
+        self.log_line("ssh", f"← {label} (exit {rc})", "ok" if rc == 0 else "warn")
+        u = self.inv.by_name(label.split()[0])
+        if u:
+            self.probe_unit(u)
+
+    def action_connect(self) -> None:
+        u = self.selected
+        if u:
+            self._ssh(u.ssh, u.name)
+
+    def action_connect_lan(self) -> None:
+        u = self.selected
+        if u is None:
+            return
+        if not u.lan:
+            self.notify(f"{u.name} has no LAN alias", severity="warning", title="no lan route")
+            return
+        self._ssh(u.lan, f"{u.name} (lan)")
+
+    def action_refresh(self) -> None:
+        self.log_line("mct", "manual refresh")
+        self.poll_tailscale()
+        self.probe_all()
+        if self.inv.proxmox:
+            self.poll_proxmox()
+
+    def action_tailscale_ping(self) -> None:
+        u = self.selected
+        if u is None:
+            return
+        self.run_ts_ping(u)
+
+    @work(group="tsping")
+    async def run_ts_ping(self, u: Unit) -> None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tailscale", "ping", "-c", "1", u.tailscale,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            self.log_line("ts-ping", out.decode(errors="ignore").strip().splitlines()[-1], "info")
+        except Exception as exc:  # noqa: BLE001
+            self.log_line("ts-ping", str(exc), "err")
+
+    # ------------------------------------------------------------ add / edit
+
+    @on(Button.Pressed, "#btn-add")
+    def _btn_add(self) -> None:
+        self.action_add_unit()
+
+    @on(Button.Pressed, "#btn-edit")
+    def _btn_edit(self) -> None:
+        self.action_edit_unit()
+
+    def action_add_unit(self) -> None:
+        self.push_screen(UnitForm(None, {u.name for u in self.inv.units}),
+                         callback=lambda r: self._form_done(r, None))
+
+    def action_edit_unit(self) -> None:
+        u = self.selected
+        if u is None:
+            self.notify("no unit highlighted", severity="warning", title="edit")
+            return
+        self.push_screen(UnitForm(u, {x.name for x in self.inv.units}),
+                         callback=lambda r: self._form_done(r, u.name))
+
+    def _form_done(self, result: FormResult, editing: str | None) -> None:
+        self.query_one("#units", DataTable).focus()
+        if result is None:
+            return
+        action, payload = result
+        if action == "remove":
+            assert isinstance(payload, str)
+            self.inv.remove(payload)
+            self.probes.pop(payload, None)
+            self.log_line("units", f"removed {payload}", "warn")
+        else:
+            assert isinstance(payload, Unit)
+            self.inv.upsert(payload, replace=editing)
+            if editing and editing != payload.name:
+                self.probes.pop(editing, None)
+            self.log_line("units", f"{'updated' if editing else 'added'} {payload.name}", "ok")
+        try:
+            path = save_inventory(self.inv)
+        except OSError as exc:
+            self.log_line("units", f"save failed: {exc}", "err")
+            self.notify(str(exc), severity="error", title="inventory not saved")
+        else:
+            self.log_line("units", f"saved {path}", "info")
+        self.rebuild_table()
+        if action == "save":
+            table = self.query_one("#units", DataTable)
+            try:
+                table.move_cursor(row=table.get_row_index(payload.name))
+            except Exception:  # noqa: BLE001 — filtered out
+                pass
+            self.render_detail()
+            self.probe_unit(payload)
+        self.apply_tailscale(self.ts)
+
+    def action_filter(self) -> None:
+        box = self.query_one("#filter", Input)
+        box.display = True
+        box.focus()
+
+    def action_clear_filter(self) -> None:
+        box = self.query_one("#filter", Input)
+        box.value = ""
+        box.display = False
+        self.filter_text = ""
+        self.rebuild_table()
+        self.query_one("#units", DataTable).focus()
+
+    @on(Input.Changed, "#filter")
+    def _filter_changed(self, ev: Input.Changed) -> None:
+        self.filter_text = ev.value
+        self.rebuild_table()
+
+    @on(Input.Submitted, "#filter")
+    def _filter_submit(self) -> None:
+        self.query_one("#units", DataTable).focus()
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="mct", description="FENNIA Master Control Terminal")
+    ap.add_argument("--no-boot", action="store_true", help="skip the boot sequence")
+    ap.add_argument("-i", "--inventory", help="path to inventory.yaml")
+    args = ap.parse_args(argv)
+    if args.inventory:
+        import os
+        os.environ["MCT_INVENTORY"] = args.inventory
+    inv = load_inventory()
+    if not inv.units:
+        print("mct: no units found — write an inventory.yaml or add Host entries to ~/.ssh/config",
+              file=sys.stderr)
+        sys.exit(1)
+    MCT(inv, boot=not args.no_boot).run()
+
+
+if __name__ == "__main__":
+    main()
