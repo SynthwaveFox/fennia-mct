@@ -153,7 +153,8 @@ async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
     script = REMOTE_SCRIPT.replace("{services}", " ".join(shlex.quote(s) for s in unit.services))
     if via:
         host, prefix = via
-        argv = [*_base_ssh(timeout, identity), host, f"{prefix} sh -s"]
+        sudo = 'if [ "$(id -u)" = 0 ]; then S=; else S=sudo -n; fi; '   # -n: never hang on a prompt
+        argv = [*_base_ssh(timeout, identity), host, f"{sudo}$S {prefix} sh -s"]
     else:
         argv = [*_base_ssh(timeout, identity), target or unit.ssh, "sh", "-s"]
     t0 = time.perf_counter()
