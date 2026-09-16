@@ -30,7 +30,7 @@ from .boot import BootScreen
 from .forms import FormResult, UnitForm
 from .inventory import Inventory, Site, Unit, load_inventory, pretty_path, save_inventory
 from .keys import ssh_identity_args
-from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status, tcp_rtt
+from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status, tcp_rtt, ts_ping
 from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
 
 GLYPH_UP = "●"
@@ -318,7 +318,8 @@ class MCT(App[None]):
             rtt = Text("…" if u.name in self._probing else "—", style=DIM)
         elif probe.ok:
             ms = probe.rtt_ms if probe.rtt_ms is not None else probe.latency_ms
-            rtt = Text(f"{ms}ms", style=ORANGE if ms < 150 else AMBER if ms < 400 else RED)
+            relayed = bool(probe.path) and probe.path != "direct"
+            rtt = Text(f"{ms}ms", style=AMBER if relayed else ORANGE if ms < 150 else AMBER if ms < 400 else RED)
         else:
             rtt = Text("✕", style=RED)
         if probe and probe.ok and probe.services:
@@ -481,6 +482,10 @@ class MCT(App[None]):
             if probe.rtt_ms is not None:
                 t.append("     RTT ", style=PEACH)
                 t.append(f"{probe.rtt_ms}ms", style=TEXT)
+                if probe.path == "direct":
+                    t.append(" direct", style=ORANGE)
+                elif probe.path:
+                    t.append(f" via {probe.path.removeprefix('relay ')} relay", style=AMBER)
                 t.append(f"   probe {probe.latency_ms}ms", style=DIM)
             else:
                 t.append("     PROBE ", style=PEACH)
@@ -563,6 +568,14 @@ class MCT(App[None]):
             self.refresh_row(u)
         self.render_detail()
 
+    async def _measure_rtt(self, u: Unit, peer) -> tuple[int | None, str]:
+        """tailscale ping for the real transport + path; TCP connect as fallback."""
+        r = await ts_ping(u.tailscale)
+        if r is not None:
+            return r
+        ms = await tcp_rtt(peer.ip)
+        return ms, ("relay " + peer.relay if peer.relay else "")
+
     def _via(self, u: Unit) -> tuple[str, str]:
         host = self.inv.by_name(u.via)
         return (host.ssh if host else u.via, u.via_exec)
@@ -587,7 +600,7 @@ class MCT(App[None]):
         try:
             ident = self.inv.identity_for(u)
             peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-            rtt_task = asyncio.ensure_future(tcp_rtt(peer.ip)) if peer and peer.ip and peer.online else None
+            rtt_task = asyncio.ensure_future(self._measure_rtt(u, peer)) if peer and peer.ip and peer.online else None
             # direct ssh first (root@<name> for containers), lan alias next,
             # host exec last — and remember which path worked for Enter
             p = await ssh_probe(u, identity=ident)
@@ -601,7 +614,7 @@ class MCT(App[None]):
         finally:
             self._probing.discard(u.name)
         if rtt_task is not None:
-            p.rtt_ms = await rtt_task
+            p.rtt_ms, p.path = await rtt_task
         old = self.probes.get(u.name)
         self.probes[u.name] = p
         if old is None or old.ok != p.ok:

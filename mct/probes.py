@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import ssl
 import time
@@ -98,6 +99,31 @@ done
 """
 
 
+_PONG = re.compile(r"via (\S+) in (\d+(?:\.\d+)?)ms")
+
+
+async def ts_ping(host: str, count: int = 3, timeout: float = 12.0) -> tuple[int, str] | None:
+    """(rtt_ms, path) from `tailscale ping`: path is "direct" or the relay
+    name, e.g. "nyc". Pinging also prompts Tailscale to upgrade to a direct
+    path, so the number settles on the real transport after a round or two."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tailscale", "ping", "-c", str(count), "--timeout", "3s", host,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    last = None
+    for line in out.decode(errors="ignore").splitlines():
+        m = _PONG.search(line)
+        if m:
+            via, ms = m.group(1), int(float(m.group(2)))
+            path = via[5:-1].lower() if via.startswith("DERP(") else "direct"
+            last = (ms, path)
+    return last
+
+
 async def tcp_rtt(host: str, port: int = 22, timeout: float = 3.0) -> int | None:
     """Milliseconds for a bare TCP connect — the network, nothing else."""
     t0 = time.perf_counter()
@@ -118,7 +144,8 @@ async def tcp_rtt(host: str, port: int = 22, timeout: float = 3.0) -> int | None
 class Probe:
     ok: bool
     latency_ms: int = 0            # whole probe: connect + ssh auth + script
-    rtt_ms: int | None = None      # bare TCP connect to port 22 (network only)
+    rtt_ms: int | None = None      # tailscale ping (falls back to a TCP connect)
+    path: str = ""                 # "direct", or the DERP relay name
     hostname: str = ""
     uptime_s: int = 0
     load: str = ""

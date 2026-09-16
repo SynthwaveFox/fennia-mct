@@ -60,9 +60,11 @@ survive — keep notes in each unit's `note:` field instead.
 - `○` dim — offline (red for a site that's down)
 - `◌` — not in the tailnet and never probed / not yet checked
 
-**RTT** is a bare TCP connect to the unit's tailnet address on port 22 — network
-only. The full probe time (ssh handshake + the telemetry script, typically
-0.5–1.5 s) is shown in the telemetry panel as `probe`.
+**RTT** comes from `tailscale ping` — the real transport round trip, orange when
+the path is direct and amber when it's going through a DERP relay (the relay
+name shows in the telemetry panel). Pinging also nudges Tailscale to upgrade a
+relayed path to direct. The full probe time (ssh handshake + the telemetry
+script, typically 0.5–1.5 s) is shown in the telemetry panel as `probe`.
 
 ## Site checks
 
