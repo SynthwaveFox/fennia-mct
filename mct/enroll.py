@@ -297,6 +297,10 @@ def run_remote(target: str, mode: str, script: str, identity: str, batch: bool,
     base = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8"]
     if batch:
         base += ["-o", "BatchMode=yes", *ssh_identity_args(identity)]
+    elif identity:
+        # interactive bootstrap: still offer the configured key first, then
+        # let ssh fall through to a password prompt if the key isn't accepted
+        base += ["-i", str(resolve_identity(identity))]
     host = via[0] if via else target
     stage = "/tmp/mct-enroll.stage.sh" if via else "/tmp/mct-enroll.sh"
     # bytes, not text=True: on Windows text mode would rewrite LF as CRLF and
@@ -375,7 +379,9 @@ def enroll_unit(inv: Inventory, u: Unit, pub: str, args: argparse.Namespace) -> 
     def remote(mode: str, batch: bool) -> tuple[int, str]:
         return run_remote(target, mode, script, run_identity, batch=batch, via=via)
 
-    already, _ = verify(target, identity)
+    already, why = verify(target, identity)
+    if not already and why and "timed out" not in why and "Connection" not in why:
+        warn(f"key login not accepted yet ({why}) — bootstrapping")
     if already and args.pub:
         # adding another device's key: we can get in, so install it now
         if args.dry_run:
