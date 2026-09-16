@@ -36,7 +36,7 @@ Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 
 | key     | action                                             |
 |---------|----------------------------------------------------|
-| `enter` | ssh into the highlighted unit (app suspends, resumes on exit); on a site row, open its URL |
+| `enter` | ssh into the highlighted unit (app suspends, resumes on exit) |
 | `l`     | ssh via the unit's `lan:` alias (fallback when the tailnet is down) |
 | `x`     | shell through the unit's `via:` host (incus/pct exec) |
 | `r`     | refresh tailscale + probes + sites + proxmox now   |
@@ -44,6 +44,7 @@ Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 | `t`     | `tailscale ping` the unit, result goes to the log  |
 | `a`     | add a unit (or click **+ ADD** under the table)    |
 | `e`     | edit the highlighted unit (or click **EDIT**) — the form also has REMOVE |
+| `esc`   | clear the filter; with no filter, drop the highlight (shows the fleet overview) |
 | `[` `]` | narrower / wider UNITS pane (remembered as `units_width`) |
 | `q`     | quit                                               |
 
@@ -89,8 +90,8 @@ sites:                              # top-level = no unit; listed at the end
     url: https://status.example.com
 ```
 
-A unit with a down site shows `◐`. `Enter` on a site row opens it in the
-browser; the telemetry panel shows its last result. Up/down transitions and
+A unit with a down site shows `◐`; the top bar counts sites up, and the
+telemetry panel shows a site's last result when its row is highlighted. Up/down transitions and
 certs under 14 days go to the log; `r` re-checks now.
 
 ## `mct ssh`

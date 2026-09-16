@@ -19,7 +19,7 @@ import time
 from datetime import datetime
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -51,6 +51,36 @@ def gauge(pct: float, width: int = 10) -> Text:
 
 class Panel(Static):
     """A bordered block with a title — the gum-style double border lives in CSS."""
+
+
+class UnitsTable(DataTable):
+    """Starts with no cursor so nothing looks 'chosen' on load; the first
+    navigation key or click arms the row cursor. `disarm()` clears it."""
+
+    ARM_KEYS = {"up", "down", "pageup", "pagedown", "home", "end", "j", "k", "enter"}
+
+    def arm(self) -> None:
+        if self.cursor_type != "row":
+            self.cursor_type = "row"
+
+    def disarm(self) -> None:
+        self.cursor_type = "none"
+
+    @property
+    def armed(self) -> bool:
+        return self.cursor_type == "row"
+
+    async def _on_key(self, event: events.Key) -> None:
+        if not self.armed and event.key in self.ARM_KEYS:
+            self.arm()
+            if event.key in ("enter", "j", "k"):
+                event.stop()          # first press only selects, never fires
+                return
+        await super()._on_key(event)
+
+    async def _on_click(self, event: events.Click) -> None:
+        self.arm()
+        await super()._on_click(event)
 
 
 class MCT(App[None]):
@@ -96,7 +126,7 @@ class MCT(App[None]):
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield Input(placeholder="filter units…", id="filter")
-                yield DataTable(id="units", cursor_type="row", zebra_stripes=False)
+                yield UnitsTable(id="units", cursor_type="none", zebra_stripes=False)
                 with Horizontal(id="unit-actions"):
                     yield Button("+ ADD", id="btn-add")
                     yield Button("EDIT", id="btn-edit")
@@ -109,13 +139,13 @@ class MCT(App[None]):
     def on_mount(self) -> None:
         self.register_theme(FENNIA)
         self.theme = "fennia"
-        self.query_one("#units", DataTable).border_title = "UNITS"
+        self.query_one("#units", UnitsTable).border_title = "UNITS"
         self.query_one("#detail", Panel).border_title = "TELEMETRY"
         self.query_one("#guests", DataTable).border_title = "PROXMOX GUESTS"
         self.query_one("#log", RichLog).border_title = "LOG"
         self.query_one("#filter", Input).display = False
 
-        table = self.query_one("#units", DataTable)
+        table = self.query_one("#units", UnitsTable)
         table.add_column(" ", key="st", width=1)
         table.add_column("UNIT", key="name")
         table.add_column("TAG", key="tag")
@@ -158,7 +188,7 @@ class MCT(App[None]):
         if ts is None:
             self.poll_tailscale()
         self.probe_all()
-        self.query_one("#units", DataTable).focus()
+        self.query_one("#units", UnitsTable).focus()
 
     # ------------------------------------------------------------ helpers
 
@@ -166,6 +196,30 @@ class MCT(App[None]):
         colour = {"info": PEACH, "ok": ORANGE, "warn": AMBER, "err": RED}[level]
         stamp = datetime.now().strftime("%H:%M:%S")
         self.query_one("#log", RichLog).write(f"[{DIM}]{stamp}[/]  [{colour}]{src:<9}[/] {msg}")
+
+    def site_summary(self) -> Text:
+        sites = self.inv.all_sites()
+        if not sites:
+            return Text("")
+        checked = [self.http.get(x.name) for x in sites]
+        up = sum(1 for r in checked if r and r.ok)
+        down = sum(1 for r in checked if r and not r.ok)
+        return Text.assemble(("   SITES ", PEACH), (f"{up}", f"bold {ORANGE if not down else AMBER}"),
+                             (f"/{len(sites)} up", TEXT))
+
+    def render_tsline(self) -> None:
+        ts = self.ts
+        line = self.query_one("#tsline", Static)
+        if ts.ok:
+            online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
+            line.update(Text.assemble(("TAILNET ", PEACH), (f"{online}", f"bold {ORANGE}"),
+                                      (f"/{len(self.inv.units)} online", TEXT),
+                                      self.site_summary(),
+                                      (f"   as {ts.self_name}", DIM), ("   ", ""),
+                                      (self.inv.squadron, f"bold {ORANGE}")))
+        else:
+            line.update(Text.assemble(("TAILNET ", PEACH), ("down", f"bold {RED}"),
+                                      (f"  {ts.error}", DIM), self.site_summary()))
 
     def tick_clock(self) -> None:
         self.query_one("#clock", Digits).update(datetime.now().strftime("%H:%M:%S"))
@@ -181,8 +235,8 @@ class MCT(App[None]):
 
     @property
     def selected_key(self) -> str | None:
-        table = self.query_one("#units", DataTable)
-        if table.row_count == 0:
+        table = self.query_one("#units", UnitsTable)
+        if table.row_count == 0 or not table.armed:
             return None
         return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
 
@@ -223,7 +277,7 @@ class MCT(App[None]):
     # ------------------------------------------------------------ table
 
     def rebuild_table(self) -> None:
-        table = self.query_one("#units", DataTable)
+        table = self.query_one("#units", UnitsTable)
         current = None
         if table.row_count:
             current = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
@@ -238,11 +292,11 @@ class MCT(App[None]):
         loose = [x for x in self.inv.sites if not f or f in x.name.lower()]
         for i, x in enumerate(loose):
             table.add_row(*self.site_cells(x, last=(i == len(loose) - 1), orphan=True), key=f"site:{x.name}")
-        if current:
+        if current and table.armed:
             try:
                 idx = table.get_row_index(current)
                 table.move_cursor(row=idx)
-            except Exception:  # noqa: BLE001 — row filtered out
+            except Exception:  # noqa: BLE001 — filtered out
                 pass
         self.render_detail()
 
@@ -276,7 +330,7 @@ class MCT(App[None]):
         return [Text(glyph, style=colour), name, tag, link, rtt, svc]
 
     def refresh_row(self, u: Unit) -> None:
-        table = self.query_one("#units", DataTable)
+        table = self.query_one("#units", UnitsTable)
         try:
             table.get_row_index(u.name)
         except Exception:  # noqa: BLE001
@@ -293,6 +347,37 @@ class MCT(App[None]):
         self.action_connect()
 
     # ------------------------------------------------------------ detail
+
+    def overview(self) -> Text:
+        """Fleet summary shown while no row is highlighted."""
+        units = self.inv.units
+        online = sum(1 for u in units if (p := self.ts.peers.get(u.tailscale)) and p.online) if self.ts.ok else 0
+        up = sum(1 for u in units if (p := self.probes.get(u.name)) and p.ok)
+        sites = self.inv.all_sites()
+        site_up = sum(1 for x in sites if (r := self.http.get(x.name)) and r.ok)
+        site_down = [x.name for x in sites if (r := self.http.get(x.name)) and not r.ok]
+        svc_bad = [f"{u.name}/{svc}" for u in units if (p := self.probes.get(u.name)) and p.ok
+                   for svc, st in p.services.items() if st != "active"]
+        t = Text()
+        t.append("▌FLEET▐ ", style=ORANGE)
+        t.append(self.inv.squadron, style=f"bold {PEACH}")
+        t.append("\n\n")
+        t.append("UNITS   ", style=PEACH)
+        t.append(f"{online}", style=f"bold {ORANGE}"); t.append(f"/{len(units)} on the tailnet   ", style=TEXT)
+        t.append(f"{up}", style=f"bold {ORANGE}"); t.append(f"/{len(units)} answering ssh\n", style=TEXT)
+        if sites:
+            t.append("SITES   ", style=PEACH)
+            t.append(f"{site_up}", style=f"bold {ORANGE}"); t.append(f"/{len(sites)} up", style=TEXT)
+            if site_down:
+                t.append("   down: " + ", ".join(site_down), style=RED)
+            t.append("\n")
+        if svc_bad:
+            t.append("SVC     ", style=PEACH); t.append(", ".join(svc_bad), style=RED); t.append("\n")
+        t.append("\n")
+        t.append("↑↓", style=f"bold {ORANGE}"); t.append(" pick a unit   ", style=DIM)
+        t.append("/", style=f"bold {ORANGE}"); t.append(" filter   ", style=DIM)
+        t.append("esc", style=f"bold {ORANGE}"); t.append(" back here", style=DIM)
+        return t
 
     def render_site_detail(self, x: Site) -> None:
         panel = self.query_one("#detail", Panel)
@@ -331,8 +416,6 @@ class MCT(App[None]):
                 t.append("\n")
             if r.error:
                 t.append("ERROR  ", style=PEACH); t.append(r.error, style=RED); t.append("\n")
-        t.append("\n")
-        t.append("enter", style=f"bold {ORANGE}"); t.append(" open in browser", style=DIM)
         panel.update(t)
 
     def render_detail(self) -> None:
@@ -343,7 +426,7 @@ class MCT(App[None]):
             return
         u = self.selected
         if u is None:
-            panel.update(Text("no unit selected", style=DIM))
+            panel.update(self.overview())
             return
         peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
         probe = self.probes.get(u.name)
@@ -457,13 +540,9 @@ class MCT(App[None]):
         was_ok = self.ts.ok
         prev = {k: p.online for k, p in self.ts.peers.items()} if self.ts.ok else {}
         self.ts = ts
-        line = self.query_one("#tsline", Static)
         if ts.ok:
             online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
-            line.update(Text.assemble(("TAILNET ", PEACH), (f"{online}", f"bold {ORANGE}"),
-                                      (f"/{len(self.inv.units)} online", TEXT),
-                                      (f"   as {ts.self_name}", DIM), ("   ", ""),
-                                      (self.inv.squadron, f"bold {ORANGE}")))
+            self.render_tsline()
             if not was_ok:
                 self.log_line("tailscale", f"link up · {online} units online", "ok")
             for u in self.inv.units:
@@ -477,8 +556,7 @@ class MCT(App[None]):
                     if p.online:
                         self.probe_unit(u)
         else:
-            line.update(Text.assemble(("TAILNET ", PEACH), ("down", f"bold {RED}"),
-                                      (f"  {ts.error}", DIM)))
+            self.render_tsline()
             if was_ok:
                 self.log_line("tailscale", ts.error, "err")
         for u in self.inv.units:
@@ -566,7 +644,7 @@ class MCT(App[None]):
         return [Text(glyph, style=colour), name, tag, link, rtt, tls]
 
     def refresh_site_row(self, x: Site) -> None:
-        table = self.query_one("#units", DataTable)
+        table = self.query_one("#units", UnitsTable)
         key = f"site:{x.name}"
         try:
             table.get_row_index(key)
@@ -594,6 +672,7 @@ class MCT(App[None]):
         if r.tls_days is not None and r.tls_days <= 14 and (old is None or old.tls_days != r.tls_days):
             self.log_line("http", f"{s.name} TLS cert expires in {r.tls_days}d", "warn")
         self.refresh_site_row(s)
+        self.render_tsline()            # top bar's SITES counter
         if s.unit:
             parent = self.inv.by_name(s.unit)
             if parent:
@@ -651,12 +730,8 @@ class MCT(App[None]):
             self.probe_unit(u)
 
     def action_connect(self) -> None:
-        site = self.selected_site
-        if site is not None:
-            import webbrowser
-            self.log_line("http", f"open {site.url}", "ok")
-            webbrowser.open(site.url)
-            return
+        if self.selected_site is not None:
+            return                      # sites aren't ssh targets; nothing to do
         u = self.selected
         if u is None:
             return
@@ -741,7 +816,7 @@ class MCT(App[None]):
                          callback=lambda r: self._form_done(r, u.name))
 
     def _form_done(self, result: FormResult, editing: str | None) -> None:
-        self.query_one("#units", DataTable).focus()
+        self.query_one("#units", UnitsTable).focus()
         if result is None:
             return
         action, payload = result
@@ -765,7 +840,7 @@ class MCT(App[None]):
             self.log_line("units", f"saved {pretty_path(path)}", "info")
         self.rebuild_table()
         if action == "save":
-            table = self.query_one("#units", DataTable)
+            table = self.query_one("#units", UnitsTable)
             try:
                 table.move_cursor(row=table.get_row_index(payload.name))
             except Exception:  # noqa: BLE001 — filtered out
@@ -798,11 +873,16 @@ class MCT(App[None]):
 
     def action_clear_filter(self) -> None:
         box = self.query_one("#filter", Input)
+        table = self.query_one("#units", UnitsTable)
+        if not box.display and not self.filter_text:
+            table.disarm()            # nothing to clear: just drop the highlight
+            self.render_detail()
+            return
         box.value = ""
         box.display = False
         self.filter_text = ""
         self.rebuild_table()
-        self.query_one("#units", DataTable).focus()
+        table.focus()
 
     @on(Input.Changed, "#filter")
     def _filter_changed(self, ev: Input.Changed) -> None:
@@ -811,7 +891,7 @@ class MCT(App[None]):
 
     @on(Input.Submitted, "#filter")
     def _filter_submit(self) -> None:
-        self.query_one("#units", DataTable).focus()
+        self.query_one("#units", UnitsTable).focus()
 
 
 def ssh_passthrough(argv: list[str]) -> int:
