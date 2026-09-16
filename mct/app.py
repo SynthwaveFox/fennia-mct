@@ -409,8 +409,15 @@ class MCT(App[None]):
                 t.append(f"HTTP {r.status}", style=ORANGE if r.ok else RED)
             else:
                 t.append("no response", style=RED)
-            t.append(f"     RTT {r.latency_ms}ms", style=TEXT)
             t.append(f"   ({age}s ago)\n", style=DIM)
+            t.append("TIMING ", style=PEACH)
+            if r.connect_ms is not None:
+                t.append(f"connect {r.connect_ms}ms", style=TEXT)
+            if r.tls_ms is not None:
+                t.append(f"  ·  tls {r.tls_ms}ms", style=TEXT)
+            if r.ttfb_ms is not None:
+                t.append(f"  ·  first byte {r.ttfb_ms}ms", style=ORANGE if r.ttfb_ms < 500 else AMBER)
+            t.append(f"  ·  total {r.latency_ms}ms\n", style=DIM)
             if r.tls_days is not None:
                 t.append("TLS    ", style=PEACH)
                 t.append(f"expires in {r.tls_days} days", style=ORANGE if r.tls_days > 14 else AMBER if r.tls_days > 3 else RED)
@@ -526,7 +533,7 @@ class MCT(App[None]):
                     t.append(f"  {GLYPH_UNKNOWN} ", style=DIM); t.append(f"{s.name:<22}", style=DIM); t.append("pending", style=DIM)
                 elif r.ok:
                     t.append(f"  {GLYPH_UP} ", style=ORANGE); t.append(f"{s.name:<22}", style=TEXT)
-                    t.append(f"{r.status} · {r.latency_ms}ms", style=ORANGE)
+                    t.append(f"{r.status} · {r.connect_ms if r.connect_ms is not None else r.latency_ms}ms", style=ORANGE)
                     if r.tls_days is not None:
                         t.append(f" · tls {r.tls_days}d", style=DIM if r.tls_days > 14 else AMBER)
                 else:
@@ -648,8 +655,10 @@ class MCT(App[None]):
         tag = Text("https" if x.url.startswith("https") else "http", style=DIM)
         link = Text("—", style=DIM) if r is None else \
             Text(str(r.status) if r.status else r.error[:14], style=ORANGE if r.ok else RED)
-        rtt = Text("—", style=DIM) if r is None or not r.status else \
-            Text(f"{r.latency_ms}ms", style=ORANGE if r.latency_ms < 800 else AMBER)
+        if r is None or r.connect_ms is None:
+            rtt = Text("—", style=DIM)
+        else:
+            rtt = Text(f"{r.connect_ms}ms", style=ORANGE if r.connect_ms < 150 else AMBER)
         if r is None or r.tls_days is None:
             tls = Text("—", style=DIM)
         else:
@@ -679,7 +688,7 @@ class MCT(App[None]):
         self.http[s.name] = r
         if old is None or old.ok != r.ok:
             if r.ok:
-                self.log_line("http", f"{s.name} up · {r.status} · {r.latency_ms}ms", "ok")
+                self.log_line("http", f"{s.name} up · {r.status} · connect {r.connect_ms}ms · first byte {r.ttfb_ms}ms", "ok")
             else:
                 self.log_line("http", f"{s.name} DOWN · {r.error}", "err")
         if r.tls_days is not None and r.tls_days <= 14 and (old is None or old.tls_days != r.tls_days):

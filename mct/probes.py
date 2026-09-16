@@ -255,56 +255,73 @@ async def ssh_probe(unit: Unit, target: str | None = None, timeout: float = 8.0,
 class HttpResult:
     ok: bool
     status: int = 0
-    latency_ms: int = 0
+    latency_ms: int = 0            # whole request (connect + tls + first byte)
+    connect_ms: int | None = None  # TCP connect only — the network
+    tls_ms: int | None = None      # TLS handshake
+    ttfb_ms: int | None = None     # request sent → first response byte (the app)
     tls_days: int | None = None    # days until the cert expires (https only)
     error: str = ""
     at: float = 0.0
 
 
-def _tls_days(host: str, port: int, timeout: float) -> int | None:
-    import datetime
-    import socket
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ss:
-                cert = ss.getpeercert()
-        exp = datetime.datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
-        return (exp - datetime.datetime.utcnow()).days
-    except Exception:  # noqa: BLE001 — cert info is best-effort
-        return None
-
-
 def _http_fetch(site: Site) -> HttpResult:
-    import urllib.error
+    """One GET with the phases timed separately: TCP connect (network), TLS
+    handshake, and time-to-first-byte (the application). Follows up to 5
+    redirects; the timings reported are for the final hop."""
+    import datetime
+    import http.client
+    import socket
     import urllib.parse
-    req = urllib.request.Request(site.url, headers={"User-Agent": "fennia-mct/1.0"}, method="GET")
-    t0 = time.perf_counter()
-    status, body = 0, b""
-    try:
-        with urllib.request.urlopen(req, timeout=site.timeout) as resp:
-            status = resp.status
-            body = resp.read(65536) if site.contains else b""
-    except urllib.error.HTTPError as exc:
-        status = exc.code
+
+    url, hops = site.url, 0
+    t_start = time.perf_counter()
+    status, body, days = 0, b"", None
+    connect_ms = tls_ms = ttfb_ms = None
+    while True:
+        u = urllib.parse.urlsplit(url)
+        host, port = u.hostname or "", u.port or (443 if u.scheme == "https" else 80)
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         try:
-            body = exc.read(65536) if site.contains else b""
-        except Exception:  # noqa: BLE001
-            body = b""
-    except Exception as exc:  # noqa: BLE001
-        msg = str(getattr(exc, "reason", exc)).split("\n")[0]
-        return HttpResult(ok=False, latency_ms=int((time.perf_counter() - t0) * 1000),
-                          error=msg[:80], at=time.time())
-    ms = int((time.perf_counter() - t0) * 1000)
+            t0 = time.perf_counter()
+            sock = socket.create_connection((host, port), timeout=site.timeout)
+            connect_ms = int((time.perf_counter() - t0) * 1000)
+            if u.scheme == "https":
+                ctx = ssl.create_default_context()
+                t1 = time.perf_counter()
+                sock = ctx.wrap_socket(sock, server_hostname=host)
+                tls_ms = int((time.perf_counter() - t1) * 1000)
+                try:
+                    exp = datetime.datetime.strptime(sock.getpeercert()["notAfter"], "%b %d %H:%M:%S %Y %Z")
+                    days = (exp - datetime.datetime.utcnow()).days
+                except Exception:  # noqa: BLE001
+                    days = None
+            conn = http.client.HTTPConnection(host, port, timeout=site.timeout)
+            conn.sock = sock
+            t2 = time.perf_counter()
+            conn.request("GET", path, headers={"User-Agent": "fennia-mct/1.0", "Host": u.netloc,
+                                                "Accept": "*/*", "Connection": "close"})
+            resp = conn.getresponse()
+            ttfb_ms = int((time.perf_counter() - t2) * 1000)
+            status = resp.status
+            if 300 <= status < 400 and resp.getheader("Location") and hops < 5:
+                url = urllib.parse.urljoin(url, resp.getheader("Location"))
+                hops += 1
+                conn.close()
+                continue
+            body = resp.read(65536) if site.contains else b""
+            conn.close()
+        except Exception as exc:  # noqa: BLE001
+            msg = str(getattr(exc, "reason", exc)).split("\n")[0]
+            return HttpResult(ok=False, latency_ms=int((time.perf_counter() - t_start) * 1000),
+                              connect_ms=connect_ms, tls_ms=tls_ms, error=msg[:80], at=time.time())
+        break
+    total = int((time.perf_counter() - t_start) * 1000)
     ok = (status == site.expect) if site.expect else (200 <= status < 400)
     err = "" if ok else f"HTTP {status}"
     if ok and site.contains and site.contains.encode() not in body:
         ok, err = False, f"body lacks {site.contains!r}"
-    days = None
-    u = urllib.parse.urlsplit(site.url)
-    if u.scheme == "https" and u.hostname:
-        days = _tls_days(u.hostname, u.port or 443, site.timeout)
-    return HttpResult(ok=ok, status=status, latency_ms=ms, tls_days=days, error=err, at=time.time())
+    return HttpResult(ok=ok, status=status, latency_ms=total, connect_ms=connect_ms, tls_ms=tls_ms,
+                      ttfb_ms=ttfb_ms, tls_days=days, error=err, at=time.time())
 
 
 async def http_check(site: Site) -> HttpResult:

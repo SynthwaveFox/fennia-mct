@@ -92,8 +92,10 @@ sites:                              # top-level = no unit; listed at the end
     url: https://status.example.com
 ```
 
-A unit with a down site shows `◐`; the top bar counts sites up, and the
-telemetry panel shows a site's last result when its row is highlighted. Up/down transitions and
+A site's RTT column is the TCP connect only (the network, comparable to a
+unit's RTT); highlight the row and the telemetry panel breaks the request into
+connect · tls · first byte — a slow *first byte* is the app, not the link.
+A unit with a down site shows `◐`, and the top bar counts sites up. Up/down transitions and
 certs under 14 days go to the log; `r` re-checks now.
 
 ## `mct ssh`
