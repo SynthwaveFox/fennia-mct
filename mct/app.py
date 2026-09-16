@@ -318,8 +318,13 @@ class MCT(App[None]):
             rtt = Text("…" if u.name in self._probing else "—", style=DIM)
         elif probe.ok:
             ms = probe.rtt_ms if probe.rtt_ms is not None else probe.latency_ms
-            relayed = bool(probe.path) and probe.path != "direct"
-            rtt = Text(f"{ms}ms", style=AMBER if relayed else ORANGE if ms < 150 else AMBER if ms < 400 else RED)
+            if probe.path == "internet":
+                style = ORANGE if ms < 250 else AMBER if ms < 600 else RED
+            elif probe.path and probe.path != "direct":
+                style = AMBER
+            else:
+                style = ORANGE if ms < 150 else AMBER if ms < 400 else RED
+            rtt = Text(f"{ms}ms", style=style)
         else:
             rtt = Text("✕", style=RED)
         if probe and probe.ok and probe.services:
@@ -491,6 +496,8 @@ class MCT(App[None]):
                 t.append(f"{probe.rtt_ms}ms", style=TEXT)
                 if probe.path == "direct":
                     t.append(" direct", style=ORANGE)
+                elif probe.path == "internet":
+                    t.append(" public internet", style=DIM)
                 elif probe.path:
                     t.append(f" via {probe.path.removeprefix('relay ')} relay", style=AMBER)
                 t.append(f"   probe {probe.latency_ms}ms", style=DIM)
@@ -583,6 +590,13 @@ class MCT(App[None]):
         ms = await tcp_rtt(peer.ip)
         return ms, ("relay " + peer.relay if peer.relay else "")
 
+    async def _measure_rtt_internet(self, u: Unit) -> tuple[int | None, str]:
+        """Unit not on the tailnet: TCP connect to the ssh host (user@host[:port])."""
+        target = u.ssh.rsplit("@", 1)[-1]
+        host, _, port = target.partition(":")
+        ms = await tcp_rtt(host, int(port) if port.isdigit() else 22)
+        return ms, ("internet" if ms is not None else "")
+
     def _via(self, u: Unit) -> tuple[str, str]:
         host = self.inv.by_name(u.via)
         return (host.ssh if host else u.via, u.via_exec)
@@ -607,7 +621,12 @@ class MCT(App[None]):
         try:
             ident = self.inv.identity_for(u)
             peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-            rtt_task = asyncio.ensure_future(self._measure_rtt(u, peer)) if peer and peer.ip and peer.online else None
+            if peer and peer.ip and peer.online:
+                rtt_task = asyncio.ensure_future(self._measure_rtt(u, peer))
+            elif peer is None and u.direct_ssh:
+                rtt_task = asyncio.ensure_future(self._measure_rtt_internet(u))   # off-tailnet: plain TCP
+            else:
+                rtt_task = None
             # direct ssh first (root@<name> for containers), lan alias next,
             # host exec last — and remember which path worked for Enter
             p = await ssh_probe(u, identity=ident)
