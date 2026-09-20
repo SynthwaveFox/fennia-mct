@@ -309,7 +309,7 @@ class MCT(App[None]):
         if peer is None:
             link = Text("—", style=DIM)
         elif not peer.online:
-            link = Text("offline", style=DIM)
+            link = Text("ts: offline", style=AMBER if (probe and probe.ok) else DIM)
         elif peer.relay and not peer.ip:
             link = Text(f"relay {peer.relay}", style=AMBER)
         else:
@@ -606,10 +606,9 @@ class MCT(App[None]):
         return self.inv.identity_for(host) if host else self.inv.identity
 
     def probe_all(self) -> None:
+        # probe everything: tailscale's "online" flag can be stale (control-plane
+        # session dropped) while the node is perfectly reachable
         for u in self.inv.units:
-            peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-            if peer is not None and not peer.online and not u.lan:
-                continue  # don't waste a timeout on a node tailscale says is down
             self.probe_unit(u)
 
     @work(group="probe")
@@ -621,7 +620,7 @@ class MCT(App[None]):
         try:
             ident = self.inv.identity_for(u)
             peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
-            if peer and peer.ip and peer.online:
+            if peer and peer.ip:
                 rtt_task = asyncio.ensure_future(self._measure_rtt(u, peer))
             elif peer is None and u.direct_ssh:
                 rtt_task = asyncio.ensure_future(self._measure_rtt_internet(u))   # off-tailnet: plain TCP
