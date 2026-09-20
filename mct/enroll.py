@@ -163,6 +163,8 @@ ChallengeResponseAuthentication no
 PermitRootLogin $ROOT_LOGIN
 PermitEmptyPasswords no
 X11Forwarding no
+UseDNS no
+GSSAPIAuthentication no
 $listen_line"
   if grep -Eq '^\s*Include\s+/etc/ssh/sshd_config\.d/' "$cfg" 2>/dev/null; then
     mkdir -p /etc/ssh/sshd_config.d
