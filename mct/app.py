@@ -636,7 +636,12 @@ class MCT(App[None]):
                 if peer is None or not peer.online:
                     p = await ssh_probe(u, target=u.lan, identity=ident)
             if not p.ok and u.via:
+                direct_err = p.error
                 p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
+                if not p.ok and "sudo" in p.error:
+                    # the fallback needs passwordless sudo on the host; the direct
+                    # failure is the informative one — keep it, note the fallback
+                    p.error = f"{direct_err}  (via {u.via}: sudo needs a password)"
         finally:
             self._probing.discard(u.name)
         if rtt_task is not None:
