@@ -628,15 +628,16 @@ class MCT(App[None]):
                 rtt_task = None
             # direct ssh first (root@<name> for containers), lan alias next,
             # host exec last — and remember which path worked for Enter
-            p = await ssh_probe(u, identity=ident)
+            to = u.timeout or self.inv.probe_timeout
+            p = await ssh_probe(u, identity=ident, timeout=to)
             self.direct_ok[u.name] = p.ok
             if not p.ok and u.lan:
                 peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
                 if peer is None or not peer.online:
-                    p = await ssh_probe(u, target=u.lan, identity=ident)
+                    p = await ssh_probe(u, target=u.lan, identity=ident, timeout=to)
             if not p.ok and u.via:
                 direct_err = p.error
-                p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u))
+                p = await ssh_probe(u, identity=self._via_identity(u), via=self._via(u), timeout=to)
                 if not p.ok and "sudo" in p.error:
                     # the fallback needs passwordless sudo on the host; the direct
                     # failure is the informative one — keep it, note the fallback

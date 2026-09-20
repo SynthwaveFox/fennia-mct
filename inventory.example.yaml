@@ -6,6 +6,7 @@ callsign: Commander
 squadron: FX-2 SQUADRON
 probe_interval: 30        # seconds between ssh telemetry probes
 tailscale_interval: 5     # seconds between `tailscale status` polls
+probe_timeout: 15         # seconds before an ssh probe gives up (units can set their own `timeout:`)
 
 # Optional: default key for every unit. A bare name is looked up in
 # ~/.config/mct/keys (put keys there with `mct keys add <name>`); a path works too.

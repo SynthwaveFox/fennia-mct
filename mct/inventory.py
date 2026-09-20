@@ -53,6 +53,7 @@ class Unit:
     via: str = ""                  # unit name of the host that runs this container (incus / pct)
     via_exec: str = ""             # command prefix on that host, e.g. "incus exec media --"
     sites: list = field(default_factory=list)   # list[Site] — HTTP checks this unit serves
+    timeout: float = 0.0           # ssh probe timeout for this unit (0 = inventory default)
 
     def __post_init__(self) -> None:
         self.sites = [s if isinstance(s, Site) else Site(**s) for s in self.sites]
@@ -94,6 +95,7 @@ class Inventory:
     sites: list[Site] = field(default_factory=list)   # sites with no unit (checked, listed at the end)
     http_interval: int = 60        # seconds between site checks
     units_width: int = 68          # width of the UNITS pane ([ / ] in the TUI)
+    probe_timeout: float = 15.0    # seconds before an ssh probe gives up
     source: str = ""
     path: Path = DEFAULT_PATH      # where save_inventory() writes
 
@@ -185,6 +187,7 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
                 sites=sites,
                 http_interval=int(data.get("http_interval", 60)),
                 units_width=int(data.get("units_width", 68)),
+                probe_timeout=float(data.get("probe_timeout", 15.0)),
                 source=str(path),
                 path=path,
             )
@@ -198,7 +201,7 @@ def _unit_dict(u: Unit) -> dict:
         d.pop("ssh")
     if d["tailscale"] == u.name.lower():
         d.pop("tailscale")
-    for k in ("lan", "note", "identity", "via", "via_exec"):
+    for k in ("lan", "note", "identity", "via", "via_exec", "timeout"):
         if not d[k]:
             d.pop(k)
     if u.via and d.get("via_exec") == f"incus exec {u.name} --":
@@ -239,6 +242,8 @@ def save_inventory(inv: Inventory) -> Path:
         data["identity"] = inv.identity
     if inv.units_width != 68:
         data["units_width"] = inv.units_width
+    if inv.probe_timeout != 15.0:
+        data["probe_timeout"] = inv.probe_timeout
     if inv.proxmox:
         pve = asdict(inv.proxmox)
         if not pve["token_value"]:
