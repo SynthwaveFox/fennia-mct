@@ -964,8 +964,10 @@ def ssh_passthrough(argv: list[str]) -> int:
         argv2 = ["ssh", "-t", *ssh_identity_args(ident), target, f"{fn}mctS {u.via_exec} {inner}"]
     else:
         target = u.lan if lan and u.lan else u.ssh
-        # -t so sudo/passwd prompts work with a command; harmless interactively
-        argv2 = ["ssh", "-t", *ssh_identity_args(inv.identity_for(u)), target, *cmd]
+        # -t so sudo/passwd prompts work with a command; harmless interactively.
+        # ssh joins remote args with spaces and the remote shell re-splits, so
+        # quote them here (same as the via path) or `sh -c "a && b"` falls apart
+        argv2 = ["ssh", "-t", *ssh_identity_args(inv.identity_for(u)), target, *([shlex.join(cmd)] if cmd else [])]
     return subprocess.call(argv2)
 
 
