@@ -647,6 +647,15 @@ class MCT(App[None]):
         if rtt_task is not None:
             p.rtt_ms, p.path = await rtt_task
         old = self.probes.get(u.name)
+        if not p.ok and old is not None and old.ok:
+            # was fine, now failed: confirm before flipping — one lost sample
+            # (relay hiccup, VPN reconnect) shouldn't paint a unit down
+            await asyncio.sleep(4)
+            p2 = await ssh_probe(u, identity=ident, timeout=to)
+            if p2.ok:
+                if rtt_task is not None:
+                    p2.rtt_ms, p2.path = p.rtt_ms, p.path
+                p = p2
         self.probes[u.name] = p
         if old is None or old.ok != p.ok:
             if p.ok:
