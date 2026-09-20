@@ -702,13 +702,30 @@ class MCT(App[None]):
             table.update_cell(key, col, cell)
 
     def poll_sites(self) -> None:
-        for x in self.inv.all_sites():
-            self.check_site(x)
+        # spread the batch over a few seconds and cap concurrency: 20+ simultaneous
+        # DNS+TLS handshakes through one resolver/NAT produce phantom failures
+        sites = self.inv.all_sites()
+        spread = min(10.0, 0.4 * len(sites))
+        for i, x in enumerate(sites):
+            self.set_timer(0.05 + spread * i / max(1, len(sites)), lambda x=x: self.check_site(x))
+
+    _http_gate: asyncio.Semaphore | None = None
 
     @work(group="http")
     async def check_site(self, s: Site) -> None:
-        r = await http_check(s)
-        old = self.http.get(s.name)
+        if self._http_gate is None:
+            self._http_gate = asyncio.Semaphore(6)
+        async with self._http_gate:
+            r = await http_check(s)
+            old = self.http.get(s.name)
+            if not r.ok and (old is None or old.ok):
+                # confirm before declaring a transition — one dropped sample is noise
+                await asyncio.sleep(3)
+                r2 = await http_check(s)
+                if r2.ok:
+                    r = r2
+                else:
+                    r = r2 if r2.status else r
         self.http[s.name] = r
         if old is None or old.ok != r.ok:
             if r.ok:
