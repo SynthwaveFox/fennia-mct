@@ -1104,6 +1104,20 @@ class MCT(App[None]):
         self.query_one("#units", UnitsTable).focus()
 
 
+def _tty_args() -> list[str]:
+    """Ask for a tty only when we have one — otherwise ssh warns and a piped
+    stdin (`curl … | mct ssh host 'cat > file'`) gets muddled."""
+    return ["-t"] if sys.stdin.isatty() else []
+
+
+def _remote_cmd(cmd: list[str]) -> str:
+    """ssh joins remote args with spaces and the remote shell re-splits them.
+    One argument is already a shell command line — pass it through verbatim,
+    the way plain ssh does. Several arguments are argv — quote each so that
+    `sh -c "a && b"` survives as three words."""
+    return cmd[0] if len(cmd) == 1 else shlex.join(cmd)
+
+
 def ssh_passthrough(argv: list[str]) -> int:
     """mct ssh <unit> [command…] — plain ssh with the unit's alias + identity.
     --lan uses the lan: alias; --via runs through the host's exec instead."""
@@ -1123,15 +1137,13 @@ def ssh_passthrough(argv: list[str]) -> int:
         host = inv.by_name(u.via)
         target = host.ssh if host else u.via
         ident = inv.identity_for(host) if host else inv.identity
-        inner = shlex.join(cmd) if cmd else "sh -c 'exec bash || exec sh'"
+        inner = _remote_cmd(cmd) if cmd else "sh -c 'exec bash || exec sh'"
         fn = 'mctS() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -H "$@"; fi; }; '
-        argv2 = ["ssh", "-t", *ssh_identity_args(ident), target, f"{fn}mctS {u.via_exec} {inner}"]
+        argv2 = ["ssh", *_tty_args(), *ssh_identity_args(ident), target, f"{fn}mctS {u.via_exec} {inner}"]
     else:
         target = u.lan if lan and u.lan else u.ssh
-        # -t so sudo/passwd prompts work with a command; harmless interactively.
-        # ssh joins remote args with spaces and the remote shell re-splits, so
-        # quote them here (same as the via path) or `sh -c "a && b"` falls apart
-        argv2 = ["ssh", "-t", *ssh_identity_args(inv.identity_for(u)), target, *([shlex.join(cmd)] if cmd else [])]
+        argv2 = ["ssh", *_tty_args(), *ssh_identity_args(inv.identity_for(u)), target,
+                 *([_remote_cmd(cmd)] if cmd else [])]
     return subprocess.call(argv2)
 
 
