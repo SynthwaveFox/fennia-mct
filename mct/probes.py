@@ -14,7 +14,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
-from .inventory import Proxmox, Site, Unit
+from .inventory import Check, Proxmox, Site, Unit
 from .keys import ssh_identity_args
 
 # ----------------------------------------------------------------- tailscale
@@ -326,6 +326,49 @@ def _http_fetch(site: Site) -> HttpResult:
 
 async def http_check(site: Site) -> HttpResult:
     return await asyncio.to_thread(_http_fetch, site)
+
+
+# ----------------------------------------------------------------- checks
+
+
+@dataclass
+class CheckResult:
+    status: str = "unknown"        # ok | warn | alert | unknown
+    message: str = ""
+    at: float = 0.0
+
+    @property
+    def bad(self) -> bool:
+        return self.status == "alert"
+
+
+async def run_check(unit: Unit, chk: Check, identity: str = "",
+                    via: tuple[str, str] | None = None) -> CheckResult:
+    """Run the check's command on the unit and read its first line."""
+    if via:
+        host, prefix = via
+        fn = 'mctS() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n -H "$@"; fi; }; '
+        argv = [*_base_ssh(chk.timeout, identity), host,
+                f"{fn}mctS {prefix} sh -c {shlex.quote(chk.run)}"]
+    else:
+        argv = [*_base_ssh(chk.timeout, identity), unit.ssh, chk.run]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=chk.timeout)
+    except asyncio.TimeoutError:
+        return CheckResult("alert", "check timed out", time.time())
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("alert", str(exc)[:80], time.time())
+    text = (out.decode(errors="ignore").strip()
+            or err.decode(errors="ignore").strip())
+    first = text.splitlines()[0] if text else ""
+    word, _, rest = first.partition(" ")
+    if word.upper() in ("OK", "WARN", "ALERT"):
+        return CheckResult(word.lower(), rest.strip(), time.time())
+    if proc.returncode != 0:
+        return CheckResult("alert", first[:100] or f"exit {proc.returncode}", time.time())
+    return CheckResult("alert", first[:100] or "no output", time.time())
 
 
 # ----------------------------------------------------------------- proxmox

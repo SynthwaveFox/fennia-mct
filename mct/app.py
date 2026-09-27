@@ -28,10 +28,10 @@ from textual.widgets import Button, DataTable, Digits, Footer, Input, RichLog, S
 from . import __version__
 from .boot import BootScreen
 from .forms import FormResult, UnitForm
-from .inventory import Inventory, Site, Unit, load_inventory, pretty_path, save_inventory
+from .inventory import Check, Inventory, Site, Unit, load_inventory, pretty_path, save_inventory
 from .keys import ssh_identity_args
-from .probes import HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, ssh_probe, tailscale_status, tcp_rtt, ts_ping
-from .theme import AMBER, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
+from .probes import CheckResult, HttpResult, PVEStatus, Probe, TSStatus, http_check, proxmox_status, run_check, ssh_probe, tailscale_status, tcp_rtt, ts_ping
+from .theme import AMBER, BASE, DIM, FENNIA, GREEN, ORANGE, PEACH, RED, TEXT
 
 GLYPH_UP = "●"
 GLYPH_HALF = "◐"
@@ -110,6 +110,9 @@ class MCT(App[None]):
         self.probes: dict[str, Probe] = {}
         self.pve: PVEStatus | None = None
         self.http: dict[str, HttpResult] = {}
+        self.checks: dict[str, CheckResult] = {}      # "unit/check" -> result
+        self.flash_on = True
+        self._was_flashing = False
         self.filter_text = ""
         self._probing: set[str] = set()
         self.direct_ok: dict[str, bool] = {}   # last probe reached the unit by plain ssh
@@ -185,6 +188,12 @@ class MCT(App[None]):
         if self.inv.all_sites():
             self.set_interval(self.inv.http_interval, self.poll_sites)
             self.poll_sites()
+        for u in self.inv.units:
+            for c in u.checks:
+                self.set_interval(c.interval, lambda u=u, c=c: self.run_unit_check(u, c))
+                self.run_unit_check(u, c)
+        if self.inv.all_checks():
+            self.set_interval(0.6, self.tick_flash)
         if ts is None:
             self.poll_tailscale()
         self.probe_all()
@@ -196,6 +205,88 @@ class MCT(App[None]):
         colour = {"info": PEACH, "ok": ORANGE, "warn": AMBER, "err": RED}[level]
         stamp = datetime.now().strftime("%H:%M:%S")
         self.query_one("#log", RichLog).write(f"[{DIM}]{stamp}[/]  [{colour}]{src:<9}[/] {msg}")
+
+    @property
+    def alerts(self) -> list[tuple[str, str, CheckResult]]:
+        """(unit, check, result) for every check currently in ALERT."""
+        out = []
+        for u in self.inv.units:
+            for c in u.checks:
+                r = self.checks.get(f"{u.name}/{c.name}")
+                if r is not None and r.bad:
+                    out.append((u.name, c.name, r))
+        return out
+
+    def unit_alerts(self, u: Unit) -> list[tuple[str, CheckResult]]:
+        out = []
+        for c in u.checks:
+            r = self.checks.get(f"{u.name}/{c.name}")
+            if r is not None and r.status in ("alert", "warn"):
+                out.append((c.name, r))
+        return out
+
+    def alert_banner(self, width: int = 0) -> Text:
+        """Flashing one-liner naming the first alert; empty when all is well."""
+        al = self.alerts
+        if not al:
+            return Text("")
+        unit, check, r = al[0]
+        label = f" ⚠ {unit}/{check}: {r.message or 'failed'} "
+        if len(al) > 1:
+            label += f"(+{len(al) - 1} more) "
+        if width:
+            label = label[:width]
+        style = f"bold {BASE} on {RED}" if self.flash_on else f"bold {RED}"
+        return Text(label, style=style)
+
+    def tick_flash(self) -> None:
+        if not self.alerts:
+            if self._was_flashing:          # settle back to a steady screen
+                self._was_flashing = False
+                self.flash_on = True
+                self.render_tsline()
+                self.render_detail()
+                for u in self.inv.units:
+                    self.refresh_row(u)
+            return
+        self._was_flashing = True
+        self.flash_on = not self.flash_on
+        self.render_tsline()
+        self.render_detail()
+        for name, _, _ in self.alerts:
+            u = self.inv.by_name(name)
+            if u:
+                self.refresh_row(u)
+
+    def poll_checks(self) -> None:
+        for u in self.inv.units:
+            for c in u.checks:
+                self.run_unit_check(u, c)
+
+    @work(group="check")
+    async def run_unit_check(self, u: Unit, c: Check) -> None:
+        probe = self.probes.get(u.name)
+        if probe is not None and not probe.ok:
+            # the unit itself is down — that's already reported; don't pile on
+            key = f"{u.name}/{c.name}"
+            if self.checks.get(key) is not None:
+                self.checks[key] = CheckResult("unknown", "unit unreachable", time.time())
+                self.refresh_row(u)
+                self.render_tsline()
+            return
+        via = self._via(u) if (u.via and self.direct_ok.get(u.name) is False) else None
+        ident = self._via_identity(u) if via else self.inv.identity_for(u)
+        r = await run_check(u, c, identity=ident, via=via)
+        key = f"{u.name}/{c.name}"
+        old = self.checks.get(key)
+        self.checks[key] = r
+        if old is None or old.status != r.status:
+            level = {"ok": "ok", "warn": "warn", "alert": "err"}.get(r.status, "warn")
+            self.log_line("check", f"{key} {r.status.upper()} · {r.message}", level)
+        self.refresh_row(u)
+        self.render_tsline()
+        if self.selected and self.selected.name == u.name:
+            self.render_detail()
 
     def site_summary(self) -> Text:
         sites = self.inv.all_sites()
@@ -210,6 +301,10 @@ class MCT(App[None]):
     def render_tsline(self) -> None:
         ts = self.ts
         line = self.query_one("#tsline", Static)
+        banner = self.alert_banner()
+        if banner.plain and self.flash_on:
+            line.update(banner)      # alternates with the normal line below
+            return
         if ts.ok:
             online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
             line.update(Text.assemble(("TAILNET ", PEACH), (f"{online}", f"bold {ORANGE}"),
@@ -257,7 +352,9 @@ class MCT(App[None]):
         return self.inv.site_by_name(key[5:]) if key and key.startswith("site:") else None
 
     def status_of(self, u: Unit) -> tuple[str, str]:
-        """(glyph, colour) for a unit combining tailscale + probe."""
+        """(glyph, colour) for a unit combining tailscale + probe + checks."""
+        if any(r.bad for _, r in self.unit_alerts(u)):
+            return "⚠", RED if self.flash_on else AMBER
         peer = self.ts.peers.get(u.tailscale) if self.ts.ok else None
         probe = self.probes.get(u.name)
         if probe and probe.ok:
@@ -365,6 +462,16 @@ class MCT(App[None]):
         svc_bad = [f"{u.name}/{svc}" for u in units if (p := self.probes.get(u.name)) and p.ok
                    for svc, st in p.services.items() if st != "active"]
         t = Text()
+        banner = self.alert_banner()
+        if banner.plain:
+            t.append_text(banner)
+            t.append("\n\n")
+            for unit, check, r in self.alerts:
+                t.append("  ⚠ ", style=RED)
+                t.append(f"{unit}/{check}  ", style=f"bold {TEXT}")
+                t.append(r.message or "failed", style=RED)
+                t.append("\n")
+            t.append("\n")
         t.append("▌FLEET▐ ", style=ORANGE)
         t.append(self.inv.squadron, style=f"bold {PEACH}")
         t.append("\n\n")
@@ -446,6 +553,10 @@ class MCT(App[None]):
         glyph, colour = self.status_of(u)
 
         t = Text()
+        mine = self.unit_alerts(u)
+        if any(r.bad for _, r in mine):
+            t.append_text(self.alert_banner())
+            t.append("\n\n")
         t.append(f"{glyph} ", style=colour)
         t.append(u.name.upper(), style=f"bold {ORANGE}")
         t.append(f"   {u.kind}", style=PEACH)
@@ -546,7 +657,33 @@ class MCT(App[None]):
                 else:
                     t.append(f"  {GLYPH_DOWN} ", style=RED); t.append(f"{s.name:<22}", style=TEXT); t.append(r.error, style=RED)
                 t.append("\n")
+        self.append_checks(t, u)
         panel.update(t)
+
+    def append_checks(self, t: Text, u: Unit) -> None:
+        if not u.checks:
+            return
+        t.append("\n\n")
+        t.append("CHECKS\n", style=PEACH)
+        for c in u.checks:
+            r = self.checks.get(f"{u.name}/{c.name}")
+            if r is None:
+                t.append(f"  {GLYPH_UNKNOWN} ", style=DIM)
+                t.append(f"{c.name:<22}", style=DIM)
+                t.append("pending", style=DIM)
+            elif r.status == "ok":
+                t.append(f"  {GLYPH_UP} ", style=ORANGE)
+                t.append(f"{c.name:<22}", style=TEXT)
+                t.append(r.message or "ok", style=ORANGE)
+            elif r.status == "warn":
+                t.append(f"  {GLYPH_HALF} ", style=AMBER)
+                t.append(f"{c.name:<22}", style=TEXT)
+                t.append(r.message or "warning", style=AMBER)
+            else:
+                t.append("  ⚠ ", style=RED)
+                t.append(f"{c.name:<22}", style=TEXT)
+                t.append(r.message or "failed", style=RED)
+            t.append("\n")
 
     # ------------------------------------------------------------ pollers
 
@@ -841,6 +978,7 @@ class MCT(App[None]):
 
     def action_refresh(self) -> None:
         self.log_line("mct", "manual refresh")
+        self.poll_checks()
         self.poll_tailscale()
         self.probe_all()
         if self.inv.all_sites():

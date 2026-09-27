@@ -40,6 +40,20 @@ class Site:
 
 
 @dataclass
+class Check:
+    """A command run on the unit that reports health the probe can't see.
+
+    It prints one line: `OK|WARN|ALERT <message>`. Anything else (or a
+    non-zero exit) counts as ALERT, with the output as the message.
+    """
+    name: str
+    run: str                       # shell command, executed on the unit
+    interval: int = 60             # seconds between runs
+    timeout: float = 25.0
+    unit: str = ""                 # set from the parent unit
+
+
+@dataclass
 class Unit:
     name: str                      # display name + default ssh alias
     ssh: str = ""                  # ssh alias/host (defaults to name)
@@ -53,10 +67,12 @@ class Unit:
     via: str = ""                  # unit name of the host that runs this container (incus / pct)
     via_exec: str = ""             # command prefix on that host, e.g. "incus exec media --"
     sites: list = field(default_factory=list)   # list[Site] — HTTP checks this unit serves
+    checks: list = field(default_factory=list)  # list[Check] — health commands run over ssh
     timeout: float = 0.0           # ssh probe timeout for this unit (0 = inventory default)
 
     def __post_init__(self) -> None:
         self.sites = [s if isinstance(s, Site) else Site(**s) for s in self.sites]
+        self.checks = [c if isinstance(c, Check) else Check(**c) for c in self.checks]
         self._ssh_explicit = bool(self.ssh)
         # exec through a host runs as root, so that's the account the key lands in
         self.ssh = self.ssh or (f"root@{self.name}" if self.via else self.name)
@@ -107,6 +123,9 @@ class Inventory:
 
     def sites_for(self, unit: Unit) -> list[Site]:
         return unit.sites
+
+    def all_checks(self) -> list[Check]:
+        return [c for u in self.units for c in u.checks]
 
     def all_sites(self) -> list[Site]:
         return [s for u in self.units for s in u.sites] + list(self.sites)
@@ -168,6 +187,8 @@ def load_inventory(explicit: str | Path | None = None) -> Inventory:
             for u in units:
                 for s in u.sites:
                     s.unit = u.name
+                for c in u.checks:
+                    c.unit = u.name
             sites: list[Site] = []
             for raw in data.get("sites", []):            # top-level: attach if unit: names one
                 s = Site(**raw)
@@ -216,6 +237,12 @@ def _unit_dict(u: Unit) -> dict:
         d["sites"] = [_site_dict(s) for s in u.sites]
     else:
         d.pop("sites", None)
+    if u.checks:
+        d["checks"] = [{k: v for k, v in asdict(c).items()
+                        if k in ("name", "run") or (k == "interval" and v != 60)
+                        or (k == "timeout" and v != 25.0)} for c in u.checks]
+    else:
+        d.pop("checks", None)
     return d
 
 

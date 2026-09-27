@@ -39,6 +39,12 @@ units:
     kind: vm
     tags: [lab]
     services: [jellyfin, docker]
+    checks:
+      # any command on the unit that prints "OK|WARN|ALERT <message>".
+      # An ALERT flashes in the top bar and on the unit's row.
+      - name: qbit
+        run: /usr/local/bin/check-qbit     # see contrib/check-qbit
+        interval: 60
     sites:
       - name: jellyfin
         url: https://jellyfin.example.com/health

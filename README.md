@@ -39,7 +39,7 @@ Inventory search order: `$MCT_INVENTORY`, `./inventory.yaml`,
 | `enter` | ssh into the highlighted unit (app suspends, resumes on exit) |
 | `l`     | ssh via the unit's `lan:` alias (fallback when the tailnet is down) |
 | `x`     | shell through the unit's `via:` host (incus/pct exec) |
-| `r`     | refresh tailscale + probes + sites + proxmox now   |
+| `r`     | refresh tailscale + probes + sites + checks + proxmox now |
 | `/`     | filter units and sites by name / tag / kind (`esc` clears) |
 | `t`     | `tailscale ping` the unit, result goes to the log  |
 | `a`     | add a unit (or click **+ ADD** under the table)    |
@@ -97,6 +97,48 @@ unit's RTT); highlight the row and the telemetry panel breaks the request into
 connect · tls · first byte — a slow *first byte* is the app, not the link.
 A unit with a down site shows `◐`, and the top bar counts sites up. Up/down transitions and
 certs under 14 days go to the log; `r` re-checks now.
+
+## Checks and alerts
+
+A unit can be up, its sites can answer, and the actual job can still be broken —
+a VPN that dropped, a port forward that rotated, a queue that stalled. A
+`checks:` entry runs a command **on the unit** and reads one line back:
+
+```yaml
+units:
+  - name: foxbox
+    checks:
+      - name: qbit
+        run: /usr/local/bin/check-qbit
+        interval: 60          # seconds (default 60)
+```
+
+The command prints `OK <message>`, `WARN <message>` or `ALERT <message>`.
+Anything else — or a non-zero exit — counts as ALERT with the output as the
+message, so a script that merely exits non-zero works as-is.
+
+An **ALERT flashes**: the top bar alternates between the normal counters and a
+red `⚠ unit/check: message` banner, the unit's glyph blinks `⚠`, and the banner
+repeats at the top of the telemetry panel. Each unit lists its checks under
+`CHECKS` in its detail, and status changes go to the log. Checks are skipped
+while a unit is unreachable — that is already reported — and `r` re-runs them.
+
+`contrib/check-qbit` is a ready-made one for qBittorrent behind PIA. It catches
+a disconnected VPN, a lost or rotated port forward, a firewalled (no incoming)
+qBittorrent, a listen port that no longer matches PIA's forwarded port, and a
+bind interface that has disappeared. On the box:
+
+```bash
+install -Dm755 check-qbit /usr/local/bin/check-qbit
+```
+
+then the WebUI credentials in `/etc/mct/qbit.env`, mode 600:
+
+```
+QBIT_URL=http://127.0.0.1:8080
+QBIT_USER=admin
+QBIT_PASS=...
+```
 
 ## `mct ssh`
 
@@ -326,7 +368,7 @@ mct/app.py        main screen, pollers, ssh launch (App.suspend)
 mct/boot.py       boot sequence screen — powers on the wordmark, runs the first tailscale poll
 mct/wordart.py    baked figlet wordmark (ansi_shadow) + subline
 mct/forms.py      add / edit / remove unit modal
-mct/probes.py     tailscale_status / ssh_probe / http_check / proxmox_status (all async, never raise)
+mct/probes.py     tailscale_status / ssh_probe / http_check / run_check / proxmox_status (all async, never raise)
 mct/inventory.py  inventory.yaml loader, ~/.ssh/config fallback
 mct/keys.py       ~/.config/mct/keys + `mct keys gen|add|list|path`
 mct/enroll.py     `mct enroll` — bootstrap / verify / harden sshd on every unit

@@ -1,0 +1,90 @@
+#!/bin/sh
+# MCT check: qBittorrent behind a PIA tunnel.
+#
+# Install on the torrent box (foxbox):
+#   install -Dm755 check-qbit /usr/local/bin/check-qbit
+#   install -Dm600 /dev/null /etc/mct/qbit.env   # then fill it in:
+#       QBIT_URL=http://127.0.0.1:8080
+#       QBIT_USER=admin
+#       QBIT_PASS=...
+#
+# Then in the inventory:
+#   - name: foxbox
+#     checks:
+#       - name: qbit
+#         run: /usr/local/bin/check-qbit
+#
+# Prints one line: OK|WARN|ALERT <message>. Catches: PIA disconnected, port
+# forward lost or rotated, qBittorrent unreachable / logged out / firewalled,
+# listen port no longer matching PIA's forwarded port, bind interface gone.
+set -u
+
+CONF=/etc/mct/qbit.env
+[ -r "$CONF" ] && . "$CONF"
+QBIT_URL="${QBIT_URL:-http://127.0.0.1:8080}"
+
+COOKIE=$(mktemp) || { echo "ALERT cannot create tempfile"; exit 0; }
+trap 'rm -f "$COOKIE"' EXIT
+
+alert() { echo "ALERT $*"; exit 0; }
+warn()  { echo "WARN $*";  exit 0; }
+
+api() { curl -sS --max-time 8 -b "$COOKIE" "$QBIT_URL$1" 2>/dev/null; }
+jnum() { sed -n "s/.*\"$1\" *: *\([0-9][0-9]*\).*/\1/p"; }
+jstr() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p"; }
+
+# ---------------------------------------------------------------- PIA
+pf=""
+if command -v piactl >/dev/null 2>&1; then
+    state=$(piactl get connectionstate 2>/dev/null)
+    [ "$state" = "Connected" ] || alert "PIA is ${state:-not responding}"
+
+    pf=$(piactl get portforward 2>/dev/null)
+    case "$pf" in
+        [0-9]*)      ;;                                  # a real port
+        Attempting)  warn "PIA still requesting a port forward" ;;
+        *)           alert "PIA port forward: ${pf:-unavailable}" ;;
+    esac
+fi
+
+# ---------------------------------------------------------------- qBittorrent
+if [ -n "${QBIT_USER:-}" ]; then
+    login=$(curl -sS --max-time 8 -c "$COOKIE" \
+            --data-urlencode "username=$QBIT_USER" \
+            --data-urlencode "password=${QBIT_PASS:-}" \
+            "$QBIT_URL/api/v2/auth/login" 2>/dev/null)
+    case "$login" in
+        Ok.*) ;;
+        "")   alert "qBittorrent unreachable at $QBIT_URL" ;;
+        *)    alert "qBittorrent login refused ($login)" ;;
+    esac
+fi
+
+info=$(api /api/v2/transfer/info)
+[ -n "$info" ] || alert "qBittorrent API not answering"
+
+conn=$(printf '%s' "$info" | jstr connection_status)
+case "$conn" in
+    connected)    ;;
+    firewalled)   alert "no incoming connections${pf:+ · PIA port $pf}" ;;
+    disconnected) alert "qBittorrent disconnected" ;;
+    *)            alert "qBittorrent status: ${conn:-unknown}" ;;
+esac
+
+prefs=$(api /api/v2/app/preferences)
+lport=$(printf '%s' "$prefs" | jnum listen_port)
+iface=$(printf '%s' "$prefs" | jstr current_network_interface)
+
+# the classic silent failure: PIA rotated the port, qBittorrent still on the old one
+if [ -n "$pf" ] && [ -n "$lport" ] && [ "$pf" != "$lport" ]; then
+    alert "port mismatch · PIA $pf, qBittorrent $lport"
+fi
+
+# bound to a VPN interface that no longer exists = torrents go nowhere
+if [ -n "$iface" ] && command -v ip >/dev/null 2>&1; then
+    ip link show "$iface" >/dev/null 2>&1 || alert "bind interface $iface is gone"
+fi
+
+dl=$(printf '%s' "$info" | jnum dl_info_speed)
+up=$(printf '%s' "$info" | jnum up_info_speed)
+echo "OK connected${lport:+ · port $lport}${iface:+ · $iface} · ${dl:-0}B/s down ${up:-0}B/s up"
