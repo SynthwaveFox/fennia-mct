@@ -6,7 +6,7 @@
 #   install -Dm600 /dev/null /etc/mct/qbit.env   # then fill it in:
 #       QBIT_URL=http://127.0.0.1:8080
 #       QBIT_USER=admin
-#       QBIT_PASS=...
+#       QBIT_PASS=the password, verbatim, no quotes needed
 #
 # Then in the inventory:
 #   - name: foxbox
@@ -19,8 +19,20 @@
 # listen port no longer matching PIA's forwarded port, bind interface gone.
 set -u
 
+# Read KEY=VALUE literally — never source it: a password containing $ ` " \ or
+# quotes would otherwise be mangled by the shell. Values need no quoting here.
 CONF=/etc/mct/qbit.env
-[ -r "$CONF" ] && . "$CONF"
+if [ -r "$CONF" ]; then
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+        v=${v%
+}                                   # tolerate CRLF
+        case "$k" in
+            QBIT_URL)  QBIT_URL=$v ;;
+            QBIT_USER) QBIT_USER=$v ;;
+            QBIT_PASS) QBIT_PASS=$v ;;
+        esac
+    done < "$CONF"
+fi
 QBIT_URL="${QBIT_URL:-http://127.0.0.1:8080}"
 
 COOKIE=$(mktemp) || { echo "ALERT cannot create tempfile"; exit 0; }

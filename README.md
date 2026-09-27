@@ -137,8 +137,13 @@ then the WebUI credentials in `/etc/mct/qbit.env`, mode 600:
 ```
 QBIT_URL=http://127.0.0.1:8080
 QBIT_USER=admin
-QBIT_PASS=...
+QBIT_PASS=the password, verbatim
 ```
+
+The file is parsed as literal `KEY=VALUE`, not sourced, so a password
+containing `$`, backticks, quotes or backslashes needs no escaping. Write it
+with an editor on the box rather than through a shell command, and no quoting
+layer can mangle it.
 
 ## `mct ssh`
 
