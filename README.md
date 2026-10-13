@@ -60,6 +60,11 @@ survive — keep notes in each unit's `note:` field instead.
 - `○` dim — offline (red for a site that's down)
 - `◌` — not in the tailnet and never probed / not yet checked
 
+The **TAILNET** counter only counts units the tailnet knows about — a unit
+reached over a subnet route or a LAN alias isn't "offline", so it's left out
+rather than reading as a fault, and its LINK column shows the address it's
+actually reached on.
+
 **RTT** comes from `tailscale ping` — the real transport round trip, orange when
 the path is direct and amber when it's going through a DERP relay (the relay
 name shows in the telemetry panel). Pinging also nudges Tailscale to upgrade a

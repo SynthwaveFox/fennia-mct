@@ -298,6 +298,15 @@ class MCT(App[None]):
         return Text.assemble(("   SITES ", PEACH), (f"{up}", f"bold {ORANGE if not down else AMBER}"),
                              (f"/{len(sites)} up", TEXT))
 
+    def tailnet_counts(self) -> tuple[int, int]:
+        """(online, known) over units the tailnet actually knows about. A unit
+        reached another way — a subnet route, a LAN alias — isn't 'offline',
+        it was never a tailnet node, so counting it would read as a fault."""
+        if not self.ts.ok:
+            return 0, 0
+        known = [u for u in self.inv.units if u.tailscale in self.ts.peers]
+        return sum(1 for u in known if self.ts.peers[u.tailscale].online), len(known)
+
     def render_tsline(self) -> None:
         ts = self.ts
         line = self.query_one("#tsline", Static)
@@ -306,9 +315,9 @@ class MCT(App[None]):
             line.update(banner)      # alternates with the normal line below
             return
         if ts.ok:
-            online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
+            online, known = self.tailnet_counts()
             line.update(Text.assemble(("TAILNET ", PEACH), (f"{online}", f"bold {ORANGE}"),
-                                      (f"/{len(self.inv.units)} online", TEXT),
+                                      (f"/{known} online", TEXT),
                                       self.site_summary(),
                                       (f"   as {ts.self_name}", DIM), ("   ", ""),
                                       (self.inv.squadron, f"bold {ORANGE}")))
@@ -404,7 +413,9 @@ class MCT(App[None]):
         name = Text(u.name, style=f"bold {TEXT}" if glyph != GLYPH_DOWN else DIM)
         tag = Text(u.tags[0] if u.tags else u.kind, style=PEACH)
         if peer is None:
-            link = Text("—", style=DIM)
+            # not a tailnet node — show the address we actually reach it on
+            host = u.ssh.rsplit("@", 1)[-1].split(":")[0]
+            link = Text(host if host != u.name else "—", style=DIM)
         elif not peer.online:
             link = Text("ts: offline", style=AMBER if (probe and probe.ok) else DIM)
         elif peer.relay and not peer.ip:
@@ -454,7 +465,7 @@ class MCT(App[None]):
     def overview(self) -> Text:
         """Fleet summary shown while no row is highlighted."""
         units = self.inv.units
-        online = sum(1 for u in units if (p := self.ts.peers.get(u.tailscale)) and p.online) if self.ts.ok else 0
+        online, known = self.tailnet_counts()
         up = sum(1 for u in units if (p := self.probes.get(u.name)) and p.ok)
         sites = self.inv.all_sites()
         site_up = sum(1 for x in sites if (r := self.http.get(x.name)) and r.ok)
@@ -476,7 +487,7 @@ class MCT(App[None]):
         t.append(self.inv.squadron, style=f"bold {PEACH}")
         t.append("\n\n")
         t.append("UNITS   ", style=PEACH)
-        t.append(f"{online}", style=f"bold {ORANGE}"); t.append(f"/{len(units)} on the tailnet   ", style=TEXT)
+        t.append(f"{online}", style=f"bold {ORANGE}"); t.append(f"/{known} on the tailnet   ", style=TEXT)
         t.append(f"{up}", style=f"bold {ORANGE}"); t.append(f"/{len(units)} answering ssh\n", style=TEXT)
         if sites:
             t.append("SITES   ", style=PEACH)
@@ -697,7 +708,7 @@ class MCT(App[None]):
         prev = {k: p.online for k, p in self.ts.peers.items()} if self.ts.ok else {}
         self.ts = ts
         if ts.ok:
-            online = sum(1 for u in self.inv.units if (p := ts.peers.get(u.tailscale)) and p.online)
+            online = self.tailnet_counts()[0]
             self.render_tsline()
             if not was_ok:
                 self.log_line("tailscale", f"link up · {online} units online", "ok")
