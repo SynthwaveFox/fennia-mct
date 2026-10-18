@@ -1116,9 +1116,10 @@ class MCT(App[None]):
 
 
 def _tty_args() -> list[str]:
-    """Ask for a tty only when we have one — otherwise ssh warns and a piped
-    stdin (`curl … | mct ssh host 'cat > file'`) gets muddled."""
-    return ["-t"] if sys.stdin.isatty() else []
+    """Ask for a tty only when both ends are terminals. A pty translates line
+    endings, so requesting one while stdout is redirected would corrupt binary
+    output (`mct ssh box 'tar czf -' > out.tgz`); a piped stdin is equally bad."""
+    return ["-t"] if sys.stdin.isatty() and sys.stdout.isatty() else []
 
 
 def _remote_cmd(cmd: list[str]) -> str:
